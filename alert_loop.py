@@ -26,7 +26,18 @@ log = logging.getLogger("alert")
 
 # Only these product families may ever produce a Telegram alert. Everything else
 # in models.REGISTRY is tracked for its comps and nothing more.
-ALERTING_FAMILIES = frozenset({"gpu"})
+#
+# 'console' was added on the owner's instruction on 2026-09-08, reversing the
+# comps-only rule the PS5 and Xbox tracking shipped under. The four console
+# models had all learned real references by then (ps5 350 / 45 comps,
+# ps5_digital 400 / 22, ps5_pro 726 / 18, xbox_series_x 482 / 12), so the
+# margin gate is a genuine test for them rather than a seed guess, and all four
+# have a non-empty alert window under the current caps.
+#
+# 'phone' deliberately stays out. The iPhone tracking is a price-learning
+# experiment the owner asked for without alerts, and nothing here has been said
+# to change that.
+ALERTING_FAMILIES = frozenset({"gpu", "console"})
 
 # How long main(--loop) waits after a failed pass, and the ceiling that wait
 # backs off to. See main() for why a failed pass must not end the process.
@@ -416,12 +427,12 @@ def run_once() -> dict:
                 else None
             )
 
-            # Families other than 'gpu' are tracked for comps only and must
-            # never be sent. iPhones are in the registry so the bot can learn
-            # what they actually resell for; the owner asked explicitly for the
-            # data without the alerts, and nothing about the margin maths knows
-            # that. No alert search targets a phone, so this should be
-            # unreachable — which is exactly why it is here rather than left
+            # Families outside ALERTING_FAMILIES are tracked for comps only
+            # and must never be sent. iPhones are in the registry so the bot can
+            # learn what they actually resell for; the owner asked explicitly
+            # for the data without the alerts, and nothing about the margin
+            # maths knows that. No alert search targets a phone, so this should
+            # be unreachable — which is exactly why it is here rather than left
             # implicit in the seeded search rows. A phone reaching this line
             # means a search row was added or edited somewhere else, and the
             # answer to that is still "do not send it".

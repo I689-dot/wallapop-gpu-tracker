@@ -368,7 +368,7 @@ export function evaluateDeal(price: number | null, model: PricedModel | undefine
  * classes of listing outright, and none of those rejections live in
  * `pricing.py` where this file was looking:
  *
- *   1. families other than 'gpu'        (ALERTING_FAMILIES)
+ *   1. families outside ALERTING_FAMILIES (gpu, console)
  *   2. whole machines                   (item.whole_machine)
  *   3. blocked sellers                  (config.BLOCKED_SELLERS)
  *   4. the bottom condition tier        (config.BLOCKED_CONDITIONS)
@@ -392,8 +392,15 @@ export function evaluateDeal(price: number | null, model: PricedModel | undefine
  *  requiring `family = 'gpu'` would hide real deals to enforce a rule aimed at
  *  handsets. The tracker never sees a null here (`models.Match.family` defaults
  *  to 'gpu'), so null means "written before the column" and is a GPU. */
+/** `alert_loop.ALERTING_FAMILIES`. 'console' joined 'gpu' on 2026-09-08 when the
+ *  owner asked for PS5 and Xbox deals in Telegram; 'phone' deliberately stays
+ *  out, because the iPhone tracking is a price-learning experiment asked for
+ *  without alerts. Keep this default in step with the tracker's. */
 export const ALERTING_FAMILIES = new Set(
-  (process.env.ALERTING_FAMILIES ?? "gpu").split(",").map((f) => f.trim()).filter(Boolean),
+  (process.env.ALERTING_FAMILIES ?? "gpu,console")
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean),
 );
 
 /** `config.BLOCKED_CONDITIONS`. Only the bottom tier is blocked: `fair`

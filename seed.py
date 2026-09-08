@@ -93,11 +93,13 @@ COMPS_MODELS = [
     ("rtx_4070_ti_super", "rtx 4070 ti super"),
     ("rtx_4080", "rtx 4080"),
     ("rtx_4080_super", "rtx 4080 super"),
+    ("rtx_4090", "rtx 4090"),
     ("rtx_5060", "rtx 5060"),
     ("rtx_5060_ti", "rtx 5060 ti"),
     ("rtx_5070", "rtx 5070"),
     ("rtx_5070_ti", "rtx 5070 ti"),
     ("rtx_5080", "rtx 5080"),
+    ("rtx_5090", "rtx 5090"),
     ("rx_6600", "rx 6600"),
     ("rx_6600_xt", "rx 6600 xt"),
     ("rx_6650_xt", "rx 6650 xt"),
@@ -142,6 +144,26 @@ CONSOLE_COMPS = [
     ("ps5_digital", "ps5 digital"),
     ("ps5", "ps5"),
     ("xbox_series_x", "xbox series x"),
+]
+
+# Console alert searches. Added 2026-09-08 when the owner asked for PS5 and Xbox
+# deals in Telegram, reversing the comps-only rule these shipped under — see
+# alert_loop.ALERTING_FAMILIES.
+#
+# Same shape as the GPU alert searches, with one difference that matters: no
+# category_ids. CATEGORY_GPU is meaningless for a console, exactly as it is for
+# the console comps rows below.
+#
+# The caps are the bootstrap fallback used only while a model has no learned
+# reference. All four consoles already have one, so these should never be the
+# operative number; they are set just under each model's current shipped buy
+# ceiling so that if a reference is ever lost the fallback stays conservative
+# rather than opening the feed to full-price listings.
+CONSOLE_ALERT_SEARCHES = [
+    ("PS5", "ps5", "ps5", 260),
+    ("PS5 Digital", "ps5 digital", "ps5_digital", 300),
+    ("PS5 Pro", "ps5 pro", "ps5_pro", 500),
+    ("Xbox Series X", "xbox series x", "xbox_series_x", 360),
 ]
 
 PHONE_COMPS = [
@@ -228,6 +250,13 @@ SEED_PRICES = {
     "rtx_5060_ti_16g": 380,
     "rtx_5070": 480,
     "rtx_5070_ti": 650,
+    # Comps-only in practice — see the note in models.REGISTRY: their references
+    # sit far above MAX_CAPITAL_PRICE / MIN_PLAUSIBLE_RATIO, so no price can
+    # open an alert window. Seeded conservatively anyway, because a seed too
+    # high is what makes an ordinary listing read as a bargain. Observed
+    # Spanish second-hand sales: one 4090 at 1975, 5090s at 2400 and 4000.
+    "rtx_4090": 1400,
+    "rtx_5090": 1900,
     # Every key in models.REGISTRY needs an entry. A model with an alert search
     # but no seed price falls through to the bootstrap-cap branch, which fires a
     # bare "matches your search" alert with no margin analysis at all — the
@@ -330,6 +359,23 @@ def build_search_rows() -> list[dict]:
                 # comps pool by MIN_COMP_PRICE anyway, so nothing that could
                 # move a median is being filtered out here.
                 "max_price": None,
+                "min_price": MIN_SEARCH_PRICE,
+                "distance_km": None,
+                "active": True,
+            }
+        )
+
+    for label, keywords, model_key, cap in CONSOLE_ALERT_SEARCHES:
+        rows.append(
+            {
+                "label": f"Alert {label}",
+                "role": "alert",
+                "keywords": keywords,
+                "model_key": model_key,
+                # No category, for the same reason the console comps rows below
+                # carry none: CATEGORY_GPU does not describe a console.
+                "category_ids": None,
+                "max_price": cap,
                 "min_price": MIN_SEARCH_PRICE,
                 "distance_km": None,
                 "active": True,

@@ -182,6 +182,14 @@ def _console_titled(norm_title: str) -> bool:
 # Ordered most-specific first. First match wins.
 REGISTRY: tuple[ModelDef, ...] = (
     # ---------------------------------------------------------- RTX 50 series
+    # The 4090 and 5090 sit in the registry for their comps and nothing else.
+    # They cannot alert and are not meant to: MIN_PLAUSIBLE_RATIO is a fraction
+    # of the reference while MAX_CAPITAL_PRICE is flat, so above a reference of
+    # MAX_CAPITAL_PRICE / MIN_PLAUSIBLE_RATIO (~769 EUR) the plausibility floor
+    # rises above the capital cap and the window closes. That is what they were
+    # removed for. Knowing what a 5090 resells for is still worth having —
+    # sold rows carrying these keys used to classify to nothing at all.
+    ModelDef("rtx_5090", "RTX 5090", _num("5090")),
     ModelDef("rtx_5080", "RTX 5080", _num("5080")),
     ModelDef("rtx_5070_ti", "RTX 5070 Ti", _num("5070", "ti")),
     ModelDef("rtx_5070", "RTX 5070", _num("5070")),
@@ -190,6 +198,7 @@ REGISTRY: tuple[ModelDef, ...] = (
     ModelDef("rtx_5060_ti", "RTX 5060 Ti", _num("5060", "ti")),
     ModelDef("rtx_5060", "RTX 5060", _num("5060")),
     # ---------------------------------------------------------- RTX 40 series
+    ModelDef("rtx_4090", "RTX 4090", _num("4090")),
     ModelDef("rtx_4080_super", "RTX 4080 Super", _num("4080", "super")),
     ModelDef("rtx_4080", "RTX 4080", _num("4080")),
     ModelDef("rtx_4070_ti_super", "RTX 4070 Ti Super", _num("4070", "ti", "super")),

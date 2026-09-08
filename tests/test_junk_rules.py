@@ -259,14 +259,33 @@ def test_a_neighbouring_console_never_maps_to_a_tracked_one(title):
     assert _priced_as_console(title) is None, title
 
 
-def test_consoles_can_never_alert():
-    """Three independent mechanisms, and this pins the one in the classifier:
-    a console match carries family 'console', which is not in
-    alert_loop.ALERTING_FAMILIES."""
+def test_consoles_carry_the_console_family_and_may_alert():
+    """Consoles alert as of 2026-09-08, on the owner's instruction.
+
+    This test used to assert the opposite, and it is kept rather than deleted
+    because the classification half of it is what actually matters: whatever
+    the alerting policy is, a console must classify as family 'console'. That
+    is what routes it to the console junk rules, to the console comps floor,
+    and to whichever side of ALERTING_FAMILIES the owner has chosen.
+    """
     import alert_loop
     for title in REAL_CONSOLES:
         match = models.classify(title)
         assert match.family == "console"
+        assert match.family in alert_loop.ALERTING_FAMILIES
+
+
+def test_phones_still_cannot_alert():
+    """The console reversal must not have taken the phones with it.
+
+    iPhones are tracked as a price-learning experiment the owner asked for
+    without alerts. Enabling one comps-only family is exactly the change that
+    could enable the other by accident, so this pins the distinction.
+    """
+    import alert_loop
+    for title in ("iPhone 15 Pro Max 256GB", "iPhone 17 Pro 1TB"):
+        match = models.classify(title)
+        assert match.family == "phone"
         assert match.family not in alert_loop.ALERTING_FAMILIES
 
 
