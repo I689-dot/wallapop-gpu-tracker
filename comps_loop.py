@@ -179,7 +179,24 @@ def infer_sales(
         was_reserved = bool(row.get("ever_reserved")) or row.get("last_status") == "reserved"
         if was_reserved:
             price = db.last_reserved_price(item_id) or row.get("last_price")
-            db.mark_closed(item_id, float(price) if price is not None else None)
+            price = float(price) if price is not None else None
+            # The pool floors are applied here as well as in pricing.collect_comps,
+            # because `sold_price` is read by more than the pool: the dashboard's
+            # Sales page lists every row carrying one, and it was showing an
+            # "RTX 5070 sold for 1 EUR" alongside real trades. A price the pool
+            # would refuse is not a sale price we know, so it is stored the way
+            # every other unknown is — as NULL, on the branch below that already
+            # means "closed, price unknown".
+            floor = config.MIN_COMP_PRICE_BY_FAMILY.get(
+                models.family_of(row.get("model_key")) or "", config.MIN_COMP_PRICE
+            )
+            if not pricing.comp_sane(price, floor):
+                log.info(
+                    "SOLD %s @ %s — price outside the comp band, stored as unknown",
+                    item_id, price,
+                )
+                price = None
+            db.mark_closed(item_id, price)
             log.info(
                 "SOLD %s @ %s (%s) — %s",
                 item_id,

@@ -90,16 +90,50 @@ class ModelDef:
     family: str = "gpu"
 
 
+# AIB product-line words a manufacturer SKU glues straight onto the model
+# suffix with no separator. normalise() splits letter/digit runs but not
+# letter/letter ones, so "GV-R9070XTGAMING OC-16GD" arrives as
+# "gv r 9070 xtgaming oc 16 gd": the "xt" is there, but the \b that used to
+# close the RX 9070 XT pattern falls between "t" and "g" and never fires. The
+# entry below it, plain RX 9070, has no suffix to lose and matched instead —
+# three confirmed sales of a 9070 XT were filed as an RX 9070 at 607.99 EUR,
+# inflating one pool and starving the other.
+#
+# Spelled out rather than left as a bare `[a-z]*`, which would have "5070 ti"
+# swallow the extremely ordinary Spanish word "tienda" and promote every plain
+# 5070 to a Ti.
+_GLUED_AIB_LINES = (
+    "gaming", "oc", "eagle", "aorus", "pulse", "nitro", "windforce", "ventus",
+    "gamerock", "phantom", "hellhound", "challenger", "steellegend", "taichi",
+    "pure", "trinity", "twin", "solid", "swift", "xtreme", "master", "elite",
+)
+
+# How a model suffix ends: a word boundary, or the start of one of the AIB
+# line words above.
+_SUFFIX_END = r"(?:\b|(?=(?:%s)\b))" % "|".join(_GLUED_AIB_LINES)
+
+# Suffixes that separate a specific card from its base model. A base entry must
+# refuse a number carrying one of these, so that a suffix the specific pattern
+# somehow failed to read cannot fall through and be priced a tier too low.
+_MODEL_SUFFIXES = ("xtx", "xt", "ti", "super", "gre")
+_NO_SUFFIX_AHEAD = r"(?!\s*(?:%s)%s)" % ("|".join(_MODEL_SUFFIXES), _SUFFIX_END)
+
+
 def _num(n: str, *suffix: str) -> str:
     """Pattern for a GPU number plus optional suffix words.
 
     Allows an optional leading brand token and tolerates the separators people
-    actually type ("rtx4070ti", "RTX 4070 TI", "4070-Ti").
+    actually type ("rtx4070ti", "RTX 4070 TI", "4070-Ti", "GV-R9070XTGAMING").
+
+    With no suffix this builds a *base* pattern, which additionally refuses any
+    number followed by a model suffix — see _NO_SUFFIX_AHEAD.
     """
+    if not suffix:
+        return rf"\b{n}\b" + _NO_SUFFIX_AHEAD
     parts = [rf"\b{n}"]
     for s in suffix:
         parts.append(rf"\s+{s}")
-    return "".join(parts) + r"\b"
+    return "".join(parts) + _SUFFIX_END
 
 
 def _iph(n: str, *suffix: str) -> str:

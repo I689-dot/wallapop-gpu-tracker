@@ -449,3 +449,55 @@ export function alertScopeRejection(listing: ScopedListing): string | null {
 export function inAlertScope(listing: ScopedListing): boolean {
   return alertScopeRejection(listing) === null;
 }
+
+// ------------------------------------------------------ comps pool gate
+
+/** config.py: `MIN_COMP_PRICE`. The floor on a price admitted to a reference
+ *  pool. Far above the owner's literal "under 5 EUR is a typo": a GPU under
+ *  50 EUR is a dead card, a replica or bait, and drags a median just as hard. */
+export const MIN_COMP_PRICE = num("MIN_COMP_PRICE", 50);
+
+/** config.py: `MIN_COMP_PRICE_BY_FAMILY['console']`. A console search returns
+ *  the console's games in bulk and some are titled exactly like a console, so
+ *  the floor does the work no wording rule can. */
+export const MIN_COMP_PRICE_CONSOLE = num("MIN_COMP_PRICE_CONSOLE", 150);
+
+/** config.py: `MAX_COMP_PRICE`. Deliberately far above MAX_SANE_PRICE — a sale
+ *  the bot would never make is still evidence of what a card is worth. */
+export const MAX_COMP_PRICE = num("MAX_COMP_PRICE", 4000);
+
+/**
+ * Why a confirmed sale is *not* one of the prices its model learned from —
+ * the port of `db.sold_comps`'s predicates plus `pricing.comp_sane`.
+ *
+ * The Sales page lists every row carrying a `sold_price`, which is the right
+ * thing to list: they are all real closures. But only some of them reach a
+ * comps pool, and until this existed the page gave no way to tell which — a
+ * 1 EUR "RTX 5070" and a 60 EUR "PS5" sat in the same list as real trades,
+ * looking like evidence the tracker had acted on when the tracker had in fact
+ * refused all three. Same failure mode as the deal list reading no scope
+ * columns, and the same fix: port the gate rather than re-derive it.
+ *
+ * Not ported here: `pricing._drop_far_below_median`, which needs the whole pool
+ * and so cannot be decided one row at a time.
+ */
+export function compsPoolRejection(sale: {
+  confidence: string | null;
+  whole_machine: boolean | null;
+  family: string | null;
+  sold_price: number | null;
+}): string | null {
+  // NULL-tolerant, like the query: rows written before the column existed carry
+  // NULL there and are not whole machines.
+  if (sale.whole_machine === true) return "whole machine";
+  // `in (high, medium)` also excludes NULL, and correctly: confidence is only
+  // NULL when model_key is, and such a row matches no model filter anyway.
+  if (sale.confidence !== "high" && sale.confidence !== "medium") {
+    return `${sale.confidence ?? "unclassified"} confidence`;
+  }
+  const floor = sale.family === "console" ? MIN_COMP_PRICE_CONSOLE : MIN_COMP_PRICE;
+  if (sale.sold_price === null) return "no price";
+  if (sale.sold_price < floor) return `under ${floor} EUR floor`;
+  if (sale.sold_price > MAX_COMP_PRICE) return `over ${MAX_COMP_PRICE} EUR ceiling`;
+  return null;
+}

@@ -57,6 +57,14 @@ TAXONOMY_COMPONENTS = 10304          # "Componentes y piezas de ordenador"
 # machines out of the alert feed. This set exists purely to keep whole-machine
 # prices out of the reference-price pool, which is the number that decides
 # every ceiling.
+# Matched against the taxonomy's *terminal* node only — see
+# wallapop_client.Item.whole_machine, which is where that changed and why.
+#
+# 24115 ("PC gaming y streaming") is a branch as well as a destination: a
+# listing may stop there, or carry on to a leaf below it. Both real shapes turn
+# up live — (24200, 24203, 24115, 24117) is a prebuilt and
+# (24200, 24203, 24115, 24130) is a loose graphics card sitting in the same
+# section of the tree.
 TAXONOMY_WHOLE_MACHINE = frozenset({
     24115,   # PC gaming y streaming
     24116,   # Portátiles gaming
@@ -346,6 +354,30 @@ MIN_COMP_PRICE_BY_FAMILY = {
 # were frozen on their seed guesses permanently. Owner's call on 2026-08-26:
 # let the comps run high, keep the alert ceiling low.
 MAX_COMP_PRICE = _f("MAX_COMP_PRICE", 4000.0)
+
+# Floor on a comp expressed as a fraction of its own pool's median, applied
+# after the absolute floors above.
+#
+# The absolute floors are blunt by design — one number per family, chosen so it
+# cannot hurt the cheapest real product in that family. That leaves them unable
+# to say anything about an expensive one: MIN_COMP_PRICE=50 is a meaningful
+# guard for an RX 6600 (median 155) and no guard at all for an RX 9070 XT
+# (median 640), where a 150 EUR "sale" is bait, a dead card or a listing whose
+# price was never the price. Two confirmed sales in the live data sat exactly
+# there — "Tarjeta Gráfica Asus 9070 XT" at 150 against 640, and "PlayStation 5
+# Pro" at 350 against 760 — and neither says anything wrong in its text, so no
+# junk rule can reach them. What marks them is the distance from their peers.
+#
+# 0.30 is deliberately loose. A worn card really does sell at half its median
+# and that is a comp worth having; this is aimed only at the prices that are
+# not the same product. Applied to the pool median rather than to any learned
+# reference so it works before a model has learned anything.
+RELATIVE_COMP_FLOOR = _f("RELATIVE_COMP_FLOOR", 0.30)
+
+# The relative floor needs a pool big enough for its median to mean something.
+# Below this many comps the median is one or two listings and filtering against
+# it would just amplify whichever of them happened to be wrong.
+RELATIVE_FLOOR_MIN_COMPS = _i("RELATIVE_FLOOR_MIN_COMPS", 5)
 
 # How far below the asking price you could realistically negotiate a seller
 # down. A listing qualifies if a haggled offer at this discount would clear the

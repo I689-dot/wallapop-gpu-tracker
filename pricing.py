@@ -265,7 +265,40 @@ def collect_comps(db: Database, model_key: str) -> list[Comp]:
         age = _age_days(_parse_dt(row.get("closed_at")))
         per_item[item_id] = Comp(float(price), config.SOLD_WEIGHT * _time_decay(age), "sold")
 
-    return list(per_item.values())
+    return _drop_far_below_median(list(per_item.values()), model_key)
+
+
+def _drop_far_below_median(pool: list[Comp], model_key: str) -> list[Comp]:
+    """Remove comps sitting far below their own pool's median.
+
+    The absolute floors in comp_sane() are one number per family and therefore
+    say nothing about an expensive model — see config.RELATIVE_COMP_FLOOR for
+    the two live cases that motivated this. A comp's distance from its peers is
+    the only signal left once the text has been exhausted.
+
+    Runs after the pool is built rather than as a predicate inside it, because
+    the threshold is a property of the pool and does not exist until the pool
+    does. Uses the plain median, not trimmed_median(): trimming already discards
+    the tails, so trimming here first would hide the very prices being tested.
+
+    Skipped on a small pool, where the median is one or two listings and this
+    would amplify whichever of them is wrong rather than correct it.
+    """
+    if len(pool) < config.RELATIVE_FLOOR_MIN_COMPS:
+        return pool
+    median = statistics.median([c.price for c in pool])
+    floor = config.RELATIVE_COMP_FLOOR * median
+    kept = [c for c in pool if c.price >= floor]
+    dropped = len(pool) - len(kept)
+    if dropped:
+        log.info(
+            "comps %s: dropped %d of %d below %.0f (%.0f%% of median %.0f)",
+            model_key, dropped, len(pool), floor,
+            100 * config.RELATIVE_COMP_FLOOR, median,
+        )
+    # Never hand back an empty pool: if the floor would take everything, the
+    # median it was derived from cannot have been describing this model.
+    return kept or pool
 
 
 def borrowed_comps(db: Database, model_key: str) -> list[Comp]:

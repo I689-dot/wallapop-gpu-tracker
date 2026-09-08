@@ -4,7 +4,7 @@ import { getSales } from "@/lib/queries";
 export const dynamic = "force-dynamic";
 
 export default async function SalesPage() {
-  const { sales, unpricedClosures, truncated } = await getSales();
+  const { sales, unpricedClosures, outsidePool, truncated } = await getSales();
 
   return (
     <div className="space-y-6">
@@ -30,7 +30,11 @@ export default async function SalesPage() {
           the tracker will attribute a price to it.
         </p>
       ) : (
-        <SalesTable sales={sales} unpricedClosures={unpricedClosures} />
+        <SalesTable
+          sales={sales}
+          unpricedClosures={unpricedClosures}
+          outsidePool={outsidePool}
+        />
       )}
     </div>
   );

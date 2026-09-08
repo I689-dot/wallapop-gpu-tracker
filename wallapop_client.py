@@ -83,7 +83,25 @@ class Item:
 
     @property
     def whole_machine(self) -> bool:
-        return any(t in config.TAXONOMY_WHOLE_MACHINE for t in self.taxonomy)
+        """Is this a built machine rather than a loose part?
+
+        The *terminal* node decides, not any node on the path. `any(...)` over
+        the whole taxonomy was the original test and it made a parent answer on
+        behalf of its children: "PC gaming y streaming" (24115) is a branch, and
+        every listing beneath it carries 24115 in its path — including the
+        loose-card leaf 24130. Nine confirmed graphics-card sales were marked as
+        whole machines that way ("Sapphire Pulse RX 9060XT 16GB", "MSI RTX 3090
+        24GB", "Zotac RTX 4060", three of one 9070 XT), each one then barred
+        from its own comps pool by db.sold_comps with nothing logged to say so.
+
+        The deepest node is what the seller actually chose, so it is the one
+        that answers. A path that stops at 24115 is still a whole machine — the
+        seller filed it under gaming PCs and went no further — which is why that
+        id stays in the set.
+        """
+        if not self.taxonomy:
+            return False
+        return self.taxonomy[-1] in config.TAXONOMY_WHOLE_MACHINE
 
     @property
     def age_seconds(self) -> float | None:

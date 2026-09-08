@@ -40,12 +40,28 @@ function FamilyChip({ family }: { family: string }) {
   );
 }
 
+/** A sale the comps pool refuses. The row stays — it is a real closure — but it
+ *  is not evidence any reference price was built from, and the page used to
+ *  present the two as the same thing. */
+function PoolChip({ reason }: { reason: string }) {
+  return (
+    <span
+      title={`Not in any comps pool: ${reason}. See compsPoolRejection in lib/constants.ts.`}
+      className="rounded bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-700 dark:text-rose-400"
+    >
+      {reason}
+    </span>
+  );
+}
+
 export function SalesTable({
   sales,
   unpricedClosures,
+  outsidePool,
 }: {
   sales: SaleRow[];
   unpricedClosures: number;
+  outsidePool: number;
 }) {
   const models = useMemo(
     () => [...new Set(sales.map((s) => s.model_key).filter((m): m is string => !!m))].sort(),
@@ -187,7 +203,10 @@ export function SalesTable({
                 const cut =
                   s.last_price !== null && s.last_price !== s.sold_price ? s.last_price : null;
                 return (
-                  <TableRow key={s.item_id}>
+                  <TableRow
+                    key={s.item_id}
+                    className={s.pool_rejection ? "opacity-55" : undefined}
+                  >
                     <TableCell>
                       <div className="flex items-center gap-2.5">
                         <Thumb src={s.image_url} alt={s.title ?? ""} className="size-9 shrink-0" />
@@ -198,6 +217,7 @@ export function SalesTable({
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-mono text-xs">{s.model_key ?? "—"}</span>
                         <FamilyChip family={familyOf(s)} />
+                        {s.pool_rejection ? <PoolChip reason={s.pool_rejection} /> : null}
                       </div>
                     </TableCell>
                     <TableCell className="text-right font-medium tabular-nums">
@@ -235,6 +255,17 @@ export function SalesTable({
           </TableBody>
         </Table>
       </div>
+
+      {outsidePool > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          <span className="font-medium tabular-nums">{outsidePool.toLocaleString()}</span> of the
+          sales above are dimmed because no reference price was learned from them — the comps pool
+          refuses a low-confidence classification, a whole machine, or a price outside its band.
+          They are real closures and stay listed; they are just not evidence of what anything is
+          worth. The gate is <code>compsPoolRejection</code>, the port of{" "}
+          <code>db.sold_comps</code>.
+        </p>
+      ) : null}
 
       <p className="text-xs text-muted-foreground">
         A further <span className="font-medium tabular-nums">{unpricedClosures.toLocaleString()}</span>{" "}

@@ -5,6 +5,7 @@ import {
   MAX_CAPITAL_PRICE,
   MAX_SANE_PRICE,
   MIN_SANE_PRICE,
+  compsPoolRejection,
   confidenceForRow,
   evaluateDeal,
   inAlertScope,
@@ -395,6 +396,9 @@ export interface SaleRow extends ListingRow {
    *  listed before the bot existed is far later than when it went on sale, and
    *  would understate the time to sell. */
   days_to_sale: number | null;
+  /** Why this sale is not one of the prices its model learned from, or null
+   *  when it is. See `compsPoolRejection` — the port of db.sold_comps. */
+  pool_rejection: string | null;
 }
 
 export interface SalesResult {
@@ -403,6 +407,10 @@ export interface SalesResult {
    *  be attributed. Reported rather than hidden: it is far and away the larger
    *  number, and it is the reason comps accumulate slowly. */
   unpricedClosures: number;
+  /** Of `sales`, how many the comps pool refuses. Reported for the same reason
+   *  as `unpricedClosures`: a confirmed closure the tracker learned nothing
+   *  from is not the same event as one it did, and the page said so nowhere. */
+  outsidePool: number;
   truncated: boolean;
 }
 
@@ -454,10 +462,26 @@ export async function getSales(): Promise<SalesResult> {
       Number.isFinite(first) && Number.isFinite(end)
         ? Math.max(0, Math.round((end - first) / 86_400_000))
         : null;
-    return { ...r, sold_price: r.sold_price as number, closed_at: closed, days_to_sale: days };
+    return {
+      ...r,
+      sold_price: r.sold_price as number,
+      closed_at: closed,
+      days_to_sale: days,
+      pool_rejection: compsPoolRejection({
+        confidence: r.confidence,
+        whole_machine: r.whole_machine,
+        family: r.family,
+        sold_price: r.sold_price,
+      }),
+    };
   });
 
-  return { sales, unpricedClosures: unpriced.count ?? 0, truncated };
+  return {
+    sales,
+    unpricedClosures: unpriced.count ?? 0,
+    outsidePool: sales.filter((s) => s.pool_rejection !== null).length,
+    truncated,
+  };
 }
 
 // ------------------------------------------------------------------- listings
