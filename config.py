@@ -374,6 +374,39 @@ MAX_COMP_PRICE = _f("MAX_COMP_PRICE", 4000.0)
 # reference so it works before a model has learned anything.
 RELATIVE_COMP_FLOOR = _f("RELATIVE_COMP_FLOOR", 0.30)
 
+# Per-model override of RELATIVE_COMP_FLOOR, for models where the generic 0.30
+# is demonstrably too loose.
+#
+# `ps5_pro` is the one that forced this, and it is a deliberate hand-tuned
+# number rather than a rule, so it needs its evidence written down. Two sales
+# titled exactly "PlayStation 5 Pro" — 350 EUR and 400 EUR against a 730 EUR
+# median — were confirmed by the owner as not Pros. Their descriptions say
+# nothing a base PS5 would not ("Consola PlayStation 5 Pro. - Diseño moderno en
+# blanco y negro."), and the word "Pro" is exactly the kind of thing a seller
+# adds carelessly to a machine worth half as much.
+#
+# Three cheaper alternatives were tried against the live pools and all three
+# failed, which is why the crude number stands:
+#
+#   * A text rule. There isn't one. Naming the 2TB capacity looked promising
+#     until a 1000 EUR Pro turned out not to mention it either, and a 455 EUR
+#     one — a real sale — reads exactly like the two fakes.
+#   * "A premium variant cannot sell below its base model's median." False in
+#     this market: an RTX 3060 Ti (8GB) genuinely sells below an RTX 3060 12GB,
+#     and the rule would have destroyed 21 real 3060 Ti comps. It also fails to
+#     fire here anyway — 350 is not below the plain PS5's 350 median.
+#   * Raising the floor for the whole console family to 0.55. That cuts a real
+#     "Xbox Series X Negra" at 250 EUR (2 controllers, all cables, 54% of its
+#     own median), and dropping genuine cheap comps biases a reference price
+#     upward, which is the more damaging error of the two.
+#
+# So the override is scoped to the single model whose cheap tail is known to be
+# mislabelled base units. 0.55 puts the cut at ~400 EUR, comfortably below the
+# cheapest confirmed-real Pro in the pool (455).
+RELATIVE_COMP_FLOOR_BY_MODEL = {
+    "ps5_pro": _f("RELATIVE_COMP_FLOOR_PS5_PRO", 0.55),
+}
+
 # The relative floor needs a pool big enough for its median to mean something.
 # Below this many comps the median is one or two listings and filtering against
 # it would just amplify whichever of them happened to be wrong.

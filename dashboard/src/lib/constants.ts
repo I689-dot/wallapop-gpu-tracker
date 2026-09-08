@@ -478,8 +478,9 @@ export const MAX_COMP_PRICE = num("MAX_COMP_PRICE", 4000);
  * refused all three. Same failure mode as the deal list reading no scope
  * columns, and the same fix: port the gate rather than re-derive it.
  *
- * Not ported here: `pricing._drop_far_below_median`, which needs the whole pool
- * and so cannot be decided one row at a time.
+ * Not decided here: `pricing._drop_far_below_median`, which needs the whole pool
+ * and so cannot be judged one row at a time — `applyRelativeFloor` below runs it
+ * over the finished list.
  */
 export function compsPoolRejection(sale: {
   confidence: string | null;
@@ -500,4 +501,73 @@ export function compsPoolRejection(sale: {
   if (sale.sold_price < floor) return `under ${floor} EUR floor`;
   if (sale.sold_price > MAX_COMP_PRICE) return `over ${MAX_COMP_PRICE} EUR ceiling`;
   return null;
+}
+
+/** config.py: `RELATIVE_COMP_FLOOR`. A comp must clear this fraction of its own
+ *  pool's median — the guard for prices the absolute floors are too blunt to
+ *  catch, which is every model whose median sits well above them. */
+export const RELATIVE_COMP_FLOOR = num("RELATIVE_COMP_FLOOR", 0.3);
+
+/** config.py: `RELATIVE_FLOOR_MIN_COMPS`. Below this the median is one or two
+ *  listings and filtering against it amplifies whichever is wrong. */
+export const RELATIVE_FLOOR_MIN_COMPS = num("RELATIVE_FLOOR_MIN_COMPS", 5);
+
+/** config.py: `RELATIVE_COMP_FLOOR_BY_MODEL`. Read that comment before adding
+ *  to this — each entry is a hand-tuned number that has to carry its evidence.
+ *  `ps5_pro` is here because two sales titled exactly "PlayStation 5 Pro", at
+ *  350 and 400 against a 730 median, were confirmed as mislabelled base units. */
+export const RELATIVE_COMP_FLOOR_BY_MODEL: Record<string, number> = {
+  ps5_pro: num("RELATIVE_COMP_FLOOR_PS5_PRO", 0.55),
+};
+
+function median(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/**
+ * The port of `pricing._drop_far_below_median`, applied over a finished list.
+ *
+ * Takes rows already carrying a `pool_rejection` from `compsPoolRejection` and
+ * fills in the one rejection that could not be decided per-row: the pool's
+ * median does not exist until the pool does. Only rows still admitted are used
+ * to compute each median, matching the tracker, where a comp the query already
+ * refused never reaches this stage.
+ *
+ * Mutates nothing — returns the reason to assign, keyed by item_id.
+ */
+export function relativeFloorRejections(
+  rows: {
+    item_id: string;
+    model_key: string | null;
+    sold_price: number;
+    pool_rejection: string | null;
+  }[],
+): Map<string, string> {
+  const byModel = new Map<string, typeof rows>();
+  for (const r of rows) {
+    if (r.pool_rejection !== null || !r.model_key) continue;
+    const bucket = byModel.get(r.model_key);
+    if (bucket) bucket.push(r);
+    else byModel.set(r.model_key, [r]);
+  }
+
+  const out = new Map<string, string>();
+  for (const [model, pool] of byModel) {
+    if (pool.length < RELATIVE_FLOOR_MIN_COMPS) continue;
+    const med = median(pool.map((r) => r.sold_price));
+    const fraction = RELATIVE_COMP_FLOOR_BY_MODEL[model] ?? RELATIVE_COMP_FLOOR;
+    const floor = fraction * med;
+    const kept = pool.filter((r) => r.sold_price >= floor);
+    // Never empty a pool: if the floor takes everything, the median it came
+    // from was not describing this model. Mirrors `kept or pool` in pricing.py.
+    if (kept.length === 0) continue;
+    for (const r of pool) {
+      if (r.sold_price < floor) {
+        out.set(r.item_id, `under ${Math.round(floor)} EUR (${Math.round(fraction * 100)}% of median)`);
+      }
+    }
+  }
+  return out;
 }

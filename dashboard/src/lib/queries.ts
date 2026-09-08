@@ -7,6 +7,7 @@ import {
   MIN_SANE_PRICE,
   compsPoolRejection,
   confidenceForRow,
+  relativeFloorRejections,
   evaluateDeal,
   inAlertScope,
   netInPerson,
@@ -475,6 +476,14 @@ export async function getSales(): Promise<SalesResult> {
       }),
     };
   });
+
+  // The pool's median does not exist until the pool does, so this rejection is
+  // the one compsPoolRejection cannot decide per-row. Filled in here.
+  const farBelow = relativeFloorRejections(sales);
+  for (const s of sales) {
+    const reason = farBelow.get(s.item_id);
+    if (reason) s.pool_rejection = reason;
+  }
 
   return {
     sales,

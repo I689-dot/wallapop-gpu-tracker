@@ -287,14 +287,16 @@ def _drop_far_below_median(pool: list[Comp], model_key: str) -> list[Comp]:
     if len(pool) < config.RELATIVE_FLOOR_MIN_COMPS:
         return pool
     median = statistics.median([c.price for c in pool])
-    floor = config.RELATIVE_COMP_FLOOR * median
+    fraction = config.RELATIVE_COMP_FLOOR_BY_MODEL.get(
+        model_key, config.RELATIVE_COMP_FLOOR
+    )
+    floor = fraction * median
     kept = [c for c in pool if c.price >= floor]
     dropped = len(pool) - len(kept)
     if dropped:
         log.info(
             "comps %s: dropped %d of %d below %.0f (%.0f%% of median %.0f)",
-            model_key, dropped, len(pool), floor,
-            100 * config.RELATIVE_COMP_FLOOR, median,
+            model_key, dropped, len(pool), floor, 100 * fraction, median,
         )
     # Never hand back an empty pool: if the floor would take everything, the
     # median it was derived from cannot have been describing this model.
