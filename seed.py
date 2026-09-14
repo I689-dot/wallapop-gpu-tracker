@@ -146,26 +146,6 @@ CONSOLE_COMPS = [
     ("xbox_series_x", "xbox series x"),
 ]
 
-# Console alert searches. Added 2026-09-08 when the owner asked for PS5 and Xbox
-# deals in Telegram, reversing the comps-only rule these shipped under — see
-# alert_loop.ALERTING_FAMILIES.
-#
-# Same shape as the GPU alert searches, with one difference that matters: no
-# category_ids. CATEGORY_GPU is meaningless for a console, exactly as it is for
-# the console comps rows below.
-#
-# The caps are the bootstrap fallback used only while a model has no learned
-# reference. All four consoles already have one, so these should never be the
-# operative number; they are set just under each model's current shipped buy
-# ceiling so that if a reference is ever lost the fallback stays conservative
-# rather than opening the feed to full-price listings.
-CONSOLE_ALERT_SEARCHES = [
-    ("PS5", "ps5", "ps5", 260),
-    ("PS5 Digital", "ps5 digital", "ps5_digital", 300),
-    ("PS5 Pro", "ps5 pro", "ps5_pro", 500),
-    ("Xbox Series X", "xbox series x", "xbox_series_x", 360),
-]
-
 PHONE_COMPS = [
     ("iphone_15", "iphone 15"),
     ("iphone_15_plus", "iphone 15 plus"),
@@ -359,23 +339,6 @@ def build_search_rows() -> list[dict]:
                 # comps pool by MIN_COMP_PRICE anyway, so nothing that could
                 # move a median is being filtered out here.
                 "max_price": None,
-                "min_price": MIN_SEARCH_PRICE,
-                "distance_km": None,
-                "active": True,
-            }
-        )
-
-    for label, keywords, model_key, cap in CONSOLE_ALERT_SEARCHES:
-        rows.append(
-            {
-                "label": f"Alert {label}",
-                "role": "alert",
-                "keywords": keywords,
-                "model_key": model_key,
-                # No category, for the same reason the console comps rows below
-                # carry none: CATEGORY_GPU does not describe a console.
-                "category_ids": None,
-                "max_price": cap,
                 "min_price": MIN_SEARCH_PRICE,
                 "distance_km": None,
                 "active": True,

@@ -259,20 +259,18 @@ def test_a_neighbouring_console_never_maps_to_a_tracked_one(title):
     assert _priced_as_console(title) is None, title
 
 
-def test_consoles_carry_the_console_family_and_may_alert():
-    """Consoles alert as of 2026-09-08, on the owner's instruction.
-
-    This test used to assert the opposite, and it is kept rather than deleted
-    because the classification half of it is what actually matters: whatever
-    the alerting policy is, a console must classify as family 'console'. That
-    is what routes it to the console junk rules, to the console comps floor,
-    and to whichever side of ALERTING_FAMILIES the owner has chosen.
-    """
+def test_consoles_cannot_alert():
+    """Consoles are comps-only. They alerted for six days in September 2026
+    and were withdrawn at the owner's request, so this has flipped twice —
+    which is the argument for pinning it. The half that never changes is the
+    classification: a console must carry family 'console', because that is
+    what routes it to the console junk rules and the console comps floor,
+    whichever side of ALERTING_FAMILIES it sits on."""
     import alert_loop
     for title in REAL_CONSOLES:
         match = models.classify(title)
         assert match.family == "console"
-        assert match.family in alert_loop.ALERTING_FAMILIES
+        assert match.family not in alert_loop.ALERTING_FAMILIES
 
 
 def test_phones_still_cannot_alert():

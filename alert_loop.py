@@ -27,17 +27,18 @@ log = logging.getLogger("alert")
 # Only these product families may ever produce a Telegram alert. Everything else
 # in models.REGISTRY is tracked for its comps and nothing more.
 #
-# 'console' was added on the owner's instruction on 2026-09-08, reversing the
-# comps-only rule the PS5 and Xbox tracking shipped under. The four console
-# models had all learned real references by then (ps5 350 / 45 comps,
-# ps5_digital 400 / 22, ps5_pro 726 / 18, xbox_series_x 482 / 12), so the
-# margin gate is a genuine test for them rather than a seed guess, and all four
-# have a non-empty alert window under the current caps.
+# Consoles were in this set for six days. Enabled on the owner's instruction on
+# 2026-09-08 and withdrawn on 2026-09-14, also on the owner's instruction: the
+# first cycle sent five console alerts at once, and over the following days the
+# volume was not what was wanted. The mechanics were sound — all four console
+# models had learned real references and non-empty alert windows — so the
+# reversal is about taste in the feed, not a defect. The console *comps*
+# searches stay: the bot keeps learning what a PS5 resells for; it just does
+# not say so in Telegram.
 #
-# 'phone' deliberately stays out. The iPhone tracking is a price-learning
-# experiment the owner asked for without alerts, and nothing here has been said
-# to change that.
-ALERTING_FAMILIES = frozenset({"gpu", "console"})
+# 'phone' was never in. The iPhone tracking is a price-learning experiment the
+# owner asked for without alerts.
+ALERTING_FAMILIES = frozenset({"gpu"})
 
 # How long main(--loop) waits after a failed pass, and the ceiling that wait
 # backs off to. See main() for why a failed pass must not end the process.
