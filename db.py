@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
+from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
 import config
@@ -20,6 +22,11 @@ log = logging.getLogger("db")
 # PostgREST caps a default select at 1000 rows; ask explicitly for more where
 # a model could plausibly have a bigger history.
 PAGE = 1000
+
+# Model keys per batch in `get_open_listings_for_models`. Small because that
+# query has three predicates and no single index covering them, and `listings`
+# is now six figures — see the docstring there for the measurements.
+OPEN_LISTINGS_BATCH = 20
 
 
 def now() -> datetime:
@@ -157,24 +164,111 @@ class Database:
         return out
 
     def get_open_listings_for_models(self, model_keys: Sequence[str]) -> list[dict]:
-        """Listings for these models that we still believe are on sale."""
+        """Listings for these models that we still believe are on sale.
+
+        Two things here are deliberate, and both were bugs: this query used one
+        batch of 50 model keys and a bare `limit(PAGE)`.
+
+        **It has to page.** `limit(PAGE)` is a cap, not a page, so the result
+        was silently truncated the moment a batch's open listings passed 1000 —
+        and it had: 2653 open listings across 66 models on 2026-10-03, so the
+        first batch returned 1000 of them and the rest were invisible. That is
+        worse than the crash it sat next to, because nothing reports it. A
+        listing missing from this result never has `missing_runs` incremented,
+        so it is never inferred closed, so it never becomes a sold comp — the
+        pool quietly stops growing and every number downstream still looks
+        plausible.
+
+        **The batches have to be small.** `listings` passed 100k rows in early
+        October (43k three weeks earlier), and with no index spanning this
+        query's three predicates a 50-key batch measured 7.5s against
+        Supabase's 8s statement timeout. That is why the comps loop had been
+        failing on roughly every other run with `57014 canceling statement due
+        to statement timeout`, crashing before `infer_sales` could close
+        anything and sending an error ping each time. 20 keys measured ~0.5s.
+
+        schema.sql now carries a partial index that makes this query fast
+        regardless (see `listings_open_by_model_idx`), but the batch size stays
+        small on purpose: the code must not depend on a migration having been
+        run to avoid crashing.
+
+        Ordered by `last_seen` because `listings_last_seen_idx` already exists
+        and serves the sort, which measured ~0.25s at any batch size against
+        ~4.5s unordered and ~1s ordered by `item_id` — asking for a sort the
+        database can already do is cheaper here than not sorting at all.
+        `item_id` follows as a tiebreaker: `range()` needs a *total* order or
+        rows sharing a `last_seen` can shift between pages, which both drops
+        and duplicates them across a page boundary.
+        """
         if not model_keys:
             return []
         cutoff = iso(now() - timedelta(days=config.STALE_LISTING_DAYS))
         out: list[dict] = []
-        for batch in chunked(model_keys, 50):
-            res = (
-                self.c.table("listings")
-                .select("item_id,model_key,last_price,last_status,ever_reserved,"
-                        "missing_runs,last_seen,title")
-                .in_("model_key", list(batch))
-                .in_("last_status", ["active", "reserved"])
-                .gte("last_seen", cutoff)
-                .limit(PAGE)
-                .execute()
+        for batch in chunked(model_keys, OPEN_LISTINGS_BATCH):
+            keys = list(batch)
+            out.extend(
+                self._paged(
+                    lambda lo, hi, keys=keys: self.c.table("listings")
+                    .select("item_id,model_key,last_price,last_status,ever_reserved,"
+                            "missing_runs,last_seen,title")
+                    .in_("model_key", keys)
+                    .in_("last_status", ["active", "reserved"])
+                    .gte("last_seen", cutoff)
+                    .order("last_seen")
+                    .order("item_id")
+                    .range(lo, hi)
+                )
             )
-            out.extend(res.data or [])
         return out
+
+    def _paged(self, build: Any, page: int = PAGE) -> list[dict]:
+        """Read every row a query matches, one page at a time.
+
+        `build(lo, hi)` must return a query already carrying a stable `order()`
+        and the `range(lo, hi)` for the window asked for. Stops on the first
+        short page, which is the only reliable end-of-data signal PostgREST
+        gives without a second counting round trip.
+        """
+        out: list[dict] = []
+        start = 0
+        while True:
+            rows = self._execute_retrying(build(start, start + page - 1))
+            out.extend(rows)
+            if len(rows) < page:
+                return out
+            start += page
+
+    @staticmethod
+    def _execute_retrying(query: Any, attempts: int = 3) -> list[dict]:
+        """Run a read, retrying a Postgres statement timeout.
+
+        57014 is the server cancelling a statement that ran past the
+        configured limit, and on a table this size it is load- and
+        cache-dependent rather than deterministic: the same query that times
+        out cold completes in a fraction of the budget warm. One crash from one
+        slow read used to abort a whole comps pass and send an error ping, so
+        the retry is worth far more than the second or two it can cost.
+
+        Deliberately narrow. Only 57014 is retried — every other APIError is a
+        real fault (a dropped column, a bad filter) that retrying cannot fix
+        and would only delay surfacing.
+        """
+        delay = 1.0
+        for attempt in range(1, attempts + 1):
+            try:
+                return query.execute().data or []
+            except APIError as exc:
+                if str(getattr(exc, "code", "") or exc.json().get("code", "")) != "57014":
+                    raise
+                if attempt == attempts:
+                    raise
+                log.warning(
+                    "statement timeout on attempt %d/%d, retrying in %.0fs",
+                    attempt, attempts, delay,
+                )
+                time.sleep(delay)
+                delay *= 2
+        return []
 
     # --------------------------------------------------------- observations
     def insert_observations(self, rows: list[dict]) -> None:

@@ -44,6 +44,28 @@ create table if not exists listings (
 create index if not exists listings_model_key_idx on listings (model_key);
 create index if not exists listings_last_seen_idx on listings (last_seen);
 
+-- The index db.get_open_listings_for_models actually needs.
+--
+-- That query is `model_key in (...) and last_status in ('active','reserved')
+-- and last_seen >= cutoff`, and neither single-column index above spans it:
+-- Postgres picks one, then filters the rest by hand. That was survivable at
+-- 43k rows and stopped being survivable at 100k — a 50-key batch measured 7.5s
+-- against Supabase's 8s statement timeout, so the comps loop crashed with
+-- 57014 on roughly every other run through early October 2026.
+--
+-- Partial, because the rows this query wants are a small and permanently
+-- shrinking fraction of the table: 2653 open listings out of 104343 on
+-- 2026-10-03. Keeping the closed rows out makes the index a fraction of the
+-- size and, more usefully, means it does not grow as history accumulates —
+-- only as the live market does.
+--
+-- `last_seen` is the second column rather than the first so the index serves
+-- the equality predicate before the range one, which is the order that lets a
+-- single scan satisfy both.
+create index if not exists listings_open_by_model_idx
+  on listings (model_key, last_seen)
+  where last_status in ('active', 'reserved');
+
 -- ------------------------------------------- [ext] structured API fields
 -- Wallapop returns all of these; they were previously being re-derived from
 -- free text (or ignored). Written as idempotent ALTERs so an existing project

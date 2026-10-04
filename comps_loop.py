@@ -17,6 +17,7 @@ import junk
 import models
 import pricing
 from alert_loop import _check_dead_man, upsert_listing_batches
+import alerts as alerts_mod
 from alerts import Telegram
 from db import Database, iso, now
 from wallapop_client import Item, WallapopClient
@@ -216,6 +217,58 @@ def infer_sales(
     return closed
 
 
+# Marker and cooldown for crash pings, mirroring alert_loop's dead-man switch.
+#
+# A crash here used to message Telegram on every single run. That is fine for a
+# one-off and useless for anything persistent: when `get_open_listings_for_models`
+# started timing out on roughly every other run in early October 2026, the
+# channel got an identical traceback every hour, and a channel full of the same
+# message is one nobody reads. The underlying query is fixed, but the reporting
+# shape was wrong independently of that bug and would have been wrong for the
+# next one too.
+#
+# Six hours matches DEAD_MAN_COOLDOWN_HOURS: long enough to stop a flapping
+# fault from flooding, short enough that a failure is still surfaced on the day
+# it happens. The first crash after a recovery always messages, so a new fault
+# is never hidden behind an old one's cooldown.
+CRASH_MARKER = "crash_warned"
+CRASH_COOLDOWN_HOURS = 6.0
+CRASH_HISTORY_RUNS = 60
+
+
+def _report_crash(db: Database, telegram: Telegram, trace: str) -> str:
+    """Ping Telegram about a crash unless an identical one is inside cooldown.
+
+    Returns the note fragment to record on this run's row, which is what a
+    later run reads to decide whether it is still inside the cooldown.
+    """
+    try:
+        runs = db.recent_runs("comps", CRASH_HISTORY_RUNS)
+    except Exception:
+        # Never let the suppression lookup be the reason a crash goes unreported.
+        log.exception("could not read run history; reporting the crash anyway")
+        runs = []
+
+    cutoff = now() - timedelta(hours=CRASH_COOLDOWN_HOURS)
+    if alerts_mod.marked_within(runs, CRASH_MARKER, cutoff):
+        log.info(
+            "crash ping already sent within %.0fh — staying quiet",
+            CRASH_COOLDOWN_HOURS,
+        )
+        return CRASH_MARKER
+
+    try:
+        telegram.send_error(
+            f"comps_loop crashed\n{trace[-1200:]}\n"
+            f"Further crash pings suppressed for {CRASH_COOLDOWN_HOURS:.0f}h."
+        )
+    except Exception:
+        log.exception("could not deliver error ping")
+        # No marker: an undelivered ping must not start a cooldown.
+        return ""
+    return CRASH_MARKER
+
+
 def run_once() -> dict:
     """One full comps pass. Returns a small stats dict."""
     config.setup_logging()
@@ -224,6 +277,9 @@ def run_once() -> dict:
     run_id = db.start_run("comps")
     stats = {"items_seen": 0, "closed": 0, "models_updated": 0, "errors": 0, "observations": 0}
     telegram = Telegram()
+    # Bound before the try: the finally block reads it, so a failure anywhere
+    # above would otherwise raise NameError there and bury the real traceback.
+    crash_notes = ""
 
     try:
         searches = db.get_searches("comps")
@@ -361,13 +417,12 @@ def run_once() -> dict:
         stats["errors"] += 1
         trace = traceback.format_exc()
         log.error("comps loop crashed:\n%s", trace)
-        try:
-            telegram.send_error(f"comps_loop crashed\n{trace[-1200:]}")
-        except Exception:
-            log.exception("could not deliver error ping")
+        crash_notes = _report_crash(db, telegram, trace)
         raise
     finally:
         notes = f"closed={stats['closed']} repriced={stats['models_updated']}"
+        if crash_notes:
+            notes = f"{notes} {crash_notes}"
         db.finish_run(
             run_id,
             items_seen=stats["items_seen"],

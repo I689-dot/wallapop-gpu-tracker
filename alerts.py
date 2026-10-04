@@ -262,6 +262,42 @@ def build_error_text(text: str) -> str:
     return f"<b>wallapop-bot</b>\n<pre>{html.escape(text[:1500])}</pre>"
 
 
+# --------------------------------------------------- repeat-ping suppression
+# A fault that persists reports once per cooldown, not once per run. The
+# dead-man switch learned this the hard way — see alert_loop's note about a
+# weekend outage being ~1000 identical messages — and a crashing loop has
+# exactly the same shape: the comps loop timed out on roughly every other run
+# through early October 2026 and sent an identical traceback each time.
+#
+# State lives in `run_log.notes` rather than in memory because every run is a
+# fresh process under GitHub Actions, so there is nothing else that survives
+# between them.
+def parse_run_time(value: object) -> datetime | None:
+    """Best-effort parse of a run_log timestamp; Supabase returns ISO strings."""
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def marked_within(runs: list[dict], marker: str, cutoff: datetime) -> bool:
+    """Whether any run at or after `cutoff` already carried `marker` in notes."""
+    for run in runs:
+        if marker not in (run.get("notes") or ""):
+            continue
+        stamp = parse_run_time(run.get("started_at") or run.get("finished_at"))
+        # An unparsable timestamp on a marked row counts as recent. Every row
+        # here came out of the newest-first history window, so it is recent by
+        # construction; the only question was whether it is inside the cooldown,
+        # and for a warning that otherwise repeats forever, staying quiet is the
+        # safer answer to "we can't tell".
+        if stamp is None or stamp >= cutoff:
+            return True
+    return False
+
+
 class Telegram:
     def __init__(self, token: str | None = None, chat_id: str | None = None) -> None:
         self.token = token or config.TELEGRAM_TOKEN

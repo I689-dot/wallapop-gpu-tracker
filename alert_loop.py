@@ -18,6 +18,7 @@ import config
 import junk
 import models
 import pricing
+import alerts as alerts_mod
 from alerts import Telegram
 from db import Database, iso, now
 from wallapop_client import Item, WallapopClient
@@ -622,30 +623,16 @@ DEAD_MAN_COOLDOWN_HOURS = 6.0
 DEAD_MAN_HISTORY_RUNS = 60
 
 
-def _parse_run_time(value: object) -> datetime | None:
-    """Best-effort parse of a run_log timestamp; Supabase returns ISO strings."""
-    if value is None:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
+# Both of these moved to alerts.py when the comps loop needed the same
+# cooldown for its crash pings; two copies of "has this already been reported"
+# is how the two drift apart. Kept as names here because this module's
+# dead-man logic reads better with the marker already bound.
+_parse_run_time = alerts_mod.parse_run_time
 
 
 def _warned_within_cooldown(runs: list[dict], cutoff: datetime) -> bool:
     """Whether a run at or after `cutoff` already carried the dead-man marker."""
-    for run in runs:
-        if DEAD_MAN_MARKER not in (run.get("notes") or ""):
-            continue
-        stamp = _parse_run_time(run.get("started_at") or run.get("finished_at"))
-        # An unparsable timestamp on a marked row counts as recent. Every row
-        # here came out of the newest-first history window, so it is recent by
-        # construction; the only question was whether it is inside the cooldown,
-        # and for a warning that otherwise repeats forever, staying quiet is the
-        # safer answer to "we can't tell".
-        if stamp is None or stamp >= cutoff:
-            return True
-    return False
+    return alerts_mod.marked_within(runs, DEAD_MAN_MARKER, cutoff)
 
 
 def _check_dead_man(

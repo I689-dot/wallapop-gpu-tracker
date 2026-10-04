@@ -1376,3 +1376,85 @@ def test_a_confident_match_with_no_comps_still_uses_the_bootstrap_cap(wire):
 
     assert alert_loop.run_once()["alerts_sent"] == 1
     assert len(tg.sent) == 1
+
+
+# ------------------------------------------------ comps crash-ping cooldown
+# A crash used to message Telegram on every run. When
+# get_open_listings_for_models started timing out on roughly every other pass
+# in early October 2026, that was an identical traceback every hour — the same
+# failure mode the dead-man switch already had a cooldown for, on a path that
+# did not. These pin the cooldown rather than the query fix, because the
+# reporting shape was wrong independently of that bug.
+class _CrashTg:
+    def __init__(self, broken=False):
+        self.sent = []
+        self.broken = broken
+
+    def send_error(self, text):
+        if self.broken:
+            raise RuntimeError("telegram down")
+        self.sent.append(text)
+
+
+class _CrashDB:
+    def __init__(self, runs=(), broken=False):
+        self._runs = list(runs)
+        self.broken = broken
+
+    def recent_runs(self, loop_name, limit):
+        if self.broken:
+            raise RuntimeError("db down")
+        return self._runs
+
+
+def _crash_marked_run(hours_ago):
+    stamp = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    return {
+        "notes": f"closed=0 repriced=0 {comps_loop.CRASH_MARKER}",
+        "started_at": stamp.isoformat(),
+    }
+
+
+def test_first_crash_pings_and_records_the_marker():
+    tg = _CrashTg()
+    notes = comps_loop._report_crash(_CrashDB(), tg, "boom")
+    assert len(tg.sent) == 1
+    assert comps_loop.CRASH_MARKER in notes
+
+
+def test_repeat_crash_inside_cooldown_stays_quiet():
+    """The whole point: an hourly crash reports once, not twelve times a day."""
+    tg = _CrashTg()
+    db = _CrashDB([_crash_marked_run(1)])
+    notes = comps_loop._report_crash(db, tg, "boom")
+    assert tg.sent == []
+    assert comps_loop.CRASH_MARKER in notes, "must stay marked, or the cooldown resets"
+
+
+def test_crash_pings_again_once_the_cooldown_expires():
+    tg = _CrashTg()
+    db = _CrashDB([_crash_marked_run(comps_loop.CRASH_COOLDOWN_HOURS + 1)])
+    assert comps_loop._report_crash(db, tg, "boom") == comps_loop.CRASH_MARKER
+    assert len(tg.sent) == 1
+
+
+def test_a_new_crash_after_healthy_runs_is_never_suppressed():
+    """A fresh fault must not hide behind an older one's cooldown."""
+    tg = _CrashTg()
+    healthy = {"notes": "closed=12 repriced=5", "started_at": datetime.now(timezone.utc).isoformat()}
+    assert comps_loop._report_crash(_CrashDB([healthy]), tg, "boom")
+    assert len(tg.sent) == 1
+
+
+def test_an_undelivered_ping_does_not_open_a_cooldown():
+    """Marking on a failed send would buy six hours of silence for a message
+    nobody ever received."""
+    notes = comps_loop._report_crash(_CrashDB(), _CrashTg(broken=True), "boom")
+    assert notes == ""
+
+
+def test_unreadable_run_history_still_reports_the_crash():
+    """The suppression lookup must never be the reason a crash goes unseen."""
+    tg = _CrashTg()
+    comps_loop._report_crash(_CrashDB(broken=True), tg, "boom")
+    assert len(tg.sent) == 1
