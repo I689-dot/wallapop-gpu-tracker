@@ -23,10 +23,20 @@ log = logging.getLogger("db")
 # a model could plausibly have a bigger history.
 PAGE = 1000
 
-# Model keys per batch in `get_open_listings_for_models`. Small because that
-# query has three predicates and no single index covering them, and `listings`
-# is now six figures — see the docstring there for the measurements.
-OPEN_LISTINGS_BATCH = 20
+# Model keys per batch in `get_open_listings_for_models`.
+#
+# Was briefly 20, to survive that query having no index spanning its three
+# predicates. `listings_open_by_model_idx` now exists (applied 2026-10-04), and
+# with it the trade reverses: batching is network round trips, so fewer and
+# larger is faster — all 66 models in one batch measured 0.41s against 3.04s at
+# 20. 50 keeps a margin without giving that up.
+#
+# The floor on this is not performance but the statement timeout. Without the
+# index a 50-key batch measured 7.5s against Supabase's ~8s budget, so if the
+# index is ever missing — a restore, a rebuilt project — this is the number
+# that decides whether the loop is slow or dead. `_execute_retrying` is what
+# makes "slow" the answer.
+OPEN_LISTINGS_BATCH = 50
 
 
 def now() -> datetime:
@@ -187,18 +197,25 @@ class Database:
         to statement timeout`, crashing before `infer_sales` could close
         anything and sending an error ping each time. 20 keys measured ~0.5s.
 
-        schema.sql now carries a partial index that makes this query fast
-        regardless (see `listings_open_by_model_idx`), but the batch size stays
-        small on purpose: the code must not depend on a migration having been
-        run to avoid crashing.
+        `listings_open_by_model_idx` (schema.sql, applied 2026-10-04) is what
+        makes it fast rather than merely survivable: 656 kB of index against
+        the 71 MB `listings_last_seen_idx` the planner used to fall back on,
+        and it discards no rows at all.
 
-        Ordered by `last_seen` because `listings_last_seen_idx` already exists
-        and serves the sort, which measured ~0.25s at any batch size against
-        ~4.5s unordered and ~1s ordered by `item_id` — asking for a sort the
-        database can already do is cheaper here than not sorting at all.
-        `item_id` follows as a tiebreaker: `range()` needs a *total* order or
-        rows sharing a `last_seen` can shift between pages, which both drops
-        and duplicates them across a page boundary.
+        The sort order is `(model_key, last_seen, item_id)`, which is not
+        cosmetic: it is the column order of `listings_open_by_model_idx`, so
+        one index scan satisfies both the filter and the sort and Postgres
+        discards nothing. Measured with the index in place, ordering by
+        `last_seen` first instead cost twice as much (54ms vs 25ms) *and*
+        scanned 53691 rows it then threw away, because the planner prefers
+        `listings_last_seen_idx` to avoid a sort and pays for it in filtering.
+        That is the shape that degrades as the table grows — the same query
+        cold measured 3.2s — so matching the index matters more than the
+        headline figure suggests.
+
+        `item_id` is last as a tiebreaker rather than for speed: `range()`
+        needs a *total* order, or rows sharing a `(model_key, last_seen)` can
+        shift between pages and be dropped and duplicated across the boundary.
         """
         if not model_keys:
             return []
@@ -214,6 +231,7 @@ class Database:
                     .in_("model_key", keys)
                     .in_("last_status", ["active", "reserved"])
                     .gte("last_seen", cutoff)
+                    .order("model_key")
                     .order("last_seen")
                     .order("item_id")
                     .range(lo, hi)

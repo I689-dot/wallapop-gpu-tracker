@@ -62,6 +62,11 @@ create index if not exists listings_last_seen_idx on listings (last_seen);
 -- `last_seen` is the second column rather than the first so the index serves
 -- the equality predicate before the range one, which is the order that lets a
 -- single scan satisfy both.
+-- Applied to the live project on 2026-10-04. db.get_open_listings_for_models
+-- sorts by (model_key, last_seen, item_id) to match this column order exactly,
+-- so one scan serves both the filter and the sort; ordering by last_seen first
+-- instead makes the planner prefer listings_last_seen_idx and filter ~54k rows
+-- by hand. If you change one, change the other.
 create index if not exists listings_open_by_model_idx
   on listings (model_key, last_seen)
   where last_status in ('active', 'reserved');
