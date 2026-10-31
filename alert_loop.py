@@ -1,4 +1,4 @@
-"""Fast loop (every 5 min): find qualifying listings and push Telegram alerts.
+"""Fast loop (every 5 min): find qualifying listings and push Discord alerts.
 
 Entry point is `run_once()` so the same code runs under GitHub Actions cron
 today and inside a `while True` loop on a VM later without changes.
@@ -19,13 +19,13 @@ import junk
 import models
 import pricing
 import alerts as alerts_mod
-from alerts import Telegram
+from alerts import Discord
 from db import Database, iso, now
 from wallapop_client import Item, WallapopClient
 
 log = logging.getLogger("alert")
 
-# Only these product families may ever produce a Telegram alert. Everything else
+# Only these product families may ever produce an alert. Everything else
 # in models.REGISTRY is tracked for its comps and nothing more.
 #
 # Consoles were in this set for six days. Enabled on the owner's instruction on
@@ -35,7 +35,7 @@ log = logging.getLogger("alert")
 # models had learned real references and non-empty alert windows — so the
 # reversal is about taste in the feed, not a defect. The console *comps*
 # searches stay: the bot keeps learning what a PS5 resells for; it just does
-# not say so in Telegram.
+# not say so in the feed.
 #
 # 'phone' was never in. The iPhone tracking is a price-learning experiment the
 # owner asked for without alerts.
@@ -250,7 +250,7 @@ def _decide_kind(price: float, already_sent: list[float]) -> str | None:
 def run_once() -> dict:
     """One full pass over the alert searches. Returns a small stats dict."""
     config.setup_logging()
-    config.require_secrets("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID")
+    config.require_secrets("DISCORD_TOKEN", "DISCORD_CHANNEL_ID")
 
     db = Database()
     run_id = db.start_run("alert")
@@ -266,7 +266,7 @@ def run_once() -> dict:
         "non_alerting_family": 0,
         "latency_samples": [],
     }
-    telegram = Telegram()
+    notifier = Discord()
     detail_client: WallapopClient | None = None
 
     try:
@@ -508,7 +508,7 @@ def run_once() -> dict:
 
             previous = min(already.get(item.item_id, [float(item.price)]))
             try:
-                sent = telegram.send_alert(
+                sent = notifier.send_alert(
                     item,
                     deal,
                     kind,
@@ -533,7 +533,7 @@ def run_once() -> dict:
                     f"{latency / 60:.1f}min" if latency is not None else "age unknown",
                     item.title[:60],
                 )
-                # DRY_RUN never touches Telegram, so it must never touch the
+                # DRY_RUN never touches Discord, so it must never touch the
                 # dedup table either — a dry-run "send" marking an item as
                 # already-alerted would silently suppress the real alert the
                 # next time this actually runs for real.
@@ -568,7 +568,7 @@ def run_once() -> dict:
         trace = traceback.format_exc()
         log.error("alert loop crashed:\n%s", trace)
         try:
-            telegram.send_error(f"alert_loop crashed\n{trace[-1200:]}")
+            notifier.send_error(f"alert_loop crashed\n{trace[-1200:]}")
         except Exception:
             log.exception("could not deliver error ping")
         raise
@@ -592,12 +592,12 @@ def run_once() -> dict:
         )
         # Runs after finish_run so this run's own row counts toward the streak.
         try:
-            _check_dead_man(db, telegram, run_id=run_id, notes=notes)
+            _check_dead_man(db, notifier, run_id=run_id, notes=notes)
         except Exception:
             log.warning("dead-man check failed", exc_info=True)
         if detail_client is not None:
             detail_client.close()
-        telegram.close()
+        notifier.close()
 
 
 # Marker written into run_log.notes when the dead-man switch fires, and read
@@ -637,7 +637,7 @@ def _warned_within_cooldown(runs: list[dict], cutoff: datetime) -> bool:
 
 def _check_dead_man(
     db: Database,
-    telegram: Telegram,
+    notifier: Discord,
     loop_name: str = "alert",
     *,
     run_id: int | None = None,
@@ -681,7 +681,7 @@ def _check_dead_man(
         )
         return
 
-    telegram.send_error(
+    delivered = notifier.send_error(
         f"{config.DEAD_MAN_RUNS} consecutive {loop_name} runs returned zero "
         "listings.\nEither the API response shape changed or the requests are "
         "geolocating outside the marketplace — run smoke_test.py, which sends "
@@ -689,6 +689,15 @@ def _check_dead_man(
         f"'No items parsed' warnings for the section type.\nFurther warnings "
         f"suppressed for {DEAD_MAN_COOLDOWN_HOURS:.0f}h."
     )
+    if delivered is False:
+        # The cooldown means "the owner has been told". A warning that never
+        # arrived has told nobody, and marking it would buy six hours of silence
+        # about the very outage it was reporting — most likely when the cause is
+        # the notification channel itself being broken (a revoked token, a bot
+        # kicked from the server). `is False` rather than falsiness: a
+        # notifier that returns nothing is taken as delivered.
+        log.warning("dead-man warning was not delivered; will retry next run")
+        return
     if run_id is not None:
         db.finish_run(run_id, notes=f"{notes} {DEAD_MAN_MARKER}".strip())
 
@@ -713,11 +722,11 @@ def main() -> None:
         — a connection reset, a 500, a statement timeout — ended the process
         permanently and silently, and the halved time-to-alert that is the
         entire point of this mode could not be relied on. run_once() already
-        pings Telegram before re-raising, so the failure is never invisible.
+        pings the owner before re-raising, so the failure is never invisible.
 
     The backoff doubles per consecutive failure up to LOOP_BACKOFF_CAP_SECONDS
     so a hard outage (expired credentials, an API shape change) doesn't become
-    a tight crash-loop hammering Wallapop and Telegram at 45-second intervals —
+    a tight crash-loop hammering Wallapop and Discord at 45-second intervals —
     which is a good way to convert a temporary problem into a rate-limit. A
     single successful pass resets it.
     """

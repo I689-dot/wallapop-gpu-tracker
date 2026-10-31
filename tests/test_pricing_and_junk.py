@@ -530,7 +530,7 @@ class _PerModelDB(_FakeDB):
 def test_n_own_reports_zero_when_the_whole_pool_was_borrowed(monkeypatch):
     """A generic key with no comps of its own used to advertise the combined
     sibling pool as its own evidence — "n=8" on a model that has observed
-    nothing. That number is printed as provenance in the Telegram alert and
+    nothing. That number is printed as provenance in the alert and
     drives the dashboard's confidence badge, so both overstated what is known.
     n_comps stays the total the price was computed from; n_own is the honest one.
     """

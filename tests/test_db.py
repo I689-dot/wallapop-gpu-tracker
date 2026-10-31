@@ -415,7 +415,7 @@ def test_duplicate_junk_row_does_not_raise():
     """C1. Both loops run overlapping schedules over a shared discovery keyword
     space, so both see the same new junk listing within seconds. The old
     read-back-then-insert lost that race routinely, and the duplicate-key error
-    landed inside the main try of both loops: crashed run, Telegram error ping,
+    landed inside the main try of both loops: crashed run, error ping,
     re-raise — over a table whose only purpose is filter tuning.
     """
     db, fake = make_db(junk_exclusions=[])
@@ -622,7 +622,7 @@ def test_recent_runs_selects_notes():
     """The dead-man cooldown is a marker written into run_log.notes and read
     back out of the recent history, so the history has to carry the column —
     without it the switch stays stateless and re-fires every run (~1000 identical
-    Telegram messages over a weekend outage)."""
+    notifications over a weekend outage)."""
     db, fake = make_db(
         run_log=[
             {

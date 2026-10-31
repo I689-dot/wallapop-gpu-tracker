@@ -1,4 +1,10 @@
-"""Telegram caption formatting, especially the 1024-char truncation edge case."""
+"""Alert caption formatting, especially the 1024-char truncation edge case.
+
+These pin `build_caption`/`build_error_text`, which still emit a small balanced
+subset of HTML; `Discord` converts that to Markdown at send time (see
+tests/test_discord.py). Balanced tags matter more now, not less: the converter
+trusts them.
+"""
 
 import re
 import sys
@@ -98,7 +104,7 @@ def test_long_description_is_trimmed_not_the_link():
 
 def test_extreme_overflow_falls_back_to_safe_line_truncation():
     """A location/title long enough to overflow even with an empty description
-    must still produce a caption Telegram can parse — no tag split mid-cut.
+    must still produce a caption whose tags balance — no tag split mid-cut.
     """
     item = make_item(
         title="RTX 4070 " + "Z" * 400,

@@ -29,8 +29,10 @@ def _i(name: str, default: int) -> int:
 
 
 # --------------------------------------------------------------- secrets
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Stripped because a secret pasted into a form field or a `gh secret set` prompt
+# routinely carries a trailing newline, which turns a valid token into a 401.
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
@@ -293,7 +295,7 @@ STALE_LISTING_DAYS = _i("STALE_LISTING_DAYS", 21)
 ALERT_MAX_PAGES = _i("ALERT_MAX_PAGES", 2)
 COMPS_MAX_PAGES = _i("COMPS_MAX_PAGES", 5)
 REQUEST_DELAY = _f("REQUEST_DELAY", 1.0)      # polite pause between API pages
-TELEGRAM_RATE_DELAY = _f("TELEGRAM_RATE_DELAY", 0.5)
+DISCORD_RATE_DELAY = _f("DISCORD_RATE_DELAY", 0.5)   # pause between messages
 HTTP_TIMEOUT = _f("HTTP_TIMEOUT", 20.0)
 HTTP_RETRIES = _i("HTTP_RETRIES", 3)
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"

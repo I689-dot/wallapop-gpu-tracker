@@ -2,7 +2,7 @@
 
 Watches Wallapop — across Spain, Portugal, Italy and everywhere else it
 operates, since it's one shared marketplace — for secondhand GPUs and pushes an
-instant Telegram alert whenever a listing is a genuine flip. "Genuine" means all
+instant Discord notification whenever a listing is a genuine flip. "Genuine" means all
 of:
 
 - a plausible negotiated offer (asking price minus a haggle discount, default
@@ -39,10 +39,10 @@ Runs free on GitHub Actions + Supabase, unattended.
 │ → per-family cap │                  │ → decay-weighted  │
 │ → offer margin   │                  │   quantile        │
 │ → condition gate │                  │ → shrink to prior │
-│ → Telegram       │                  │ → buy ceiling     │
+│ → Discord        │                  │ → buy ceiling     │
 └────────┬─────────┘                  └───────────────────┘
          ▼
-    Telegram (sendPhoto)
+    Discord (embed)
 ```
 
 Both loops run as a **self-dispatch chain**: each GitHub Actions run pads out
@@ -68,11 +68,19 @@ chain is alive forks it into two. See Known limits.
    key (server-side only — it bypasses row-level security; never ship it to a
    browser).
 
-### 2. Telegram
+### 2. Discord
 
-1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token.
-2. Send your new bot any message (a bot can't open a chat with you first).
-3. Message [@userinfobot](https://t.me/userinfobot) to get your numeric chat id.
+1. [discord.com/developers/applications](https://discord.com/developers/applications)
+   → **New Application** → **Bot** → **Reset Token** → copy it.
+2. **OAuth2 → URL Generator**: scope `bot`, permissions **View Channel**,
+   **Send Messages** and **Embed Links**. Open the generated URL and add the bot
+   to your server. No privileged intents are needed — the bot only sends.
+3. Discord → Settings → Advanced → **Developer Mode** on, then right-click the
+   target channel → **Copy Channel ID**.
+
+If the bot cannot post, Discord answers 403 with a numeric error code that names
+the missing permission; it is logged verbatim. A private channel needs the bot
+granted access to it explicitly.
 
 ### 3. Local config
 
@@ -102,8 +110,8 @@ variables → Actions → add:
 
 | Secret | |
 |---|---|
-| `TELEGRAM_TOKEN` | from BotFather |
-| `TELEGRAM_CHAT_ID` | your numeric chat id |
+| `DISCORD_TOKEN` | the bot token from step 2 |
+| `DISCORD_CHANNEL_ID` | the numeric channel id from step 2 |
 | `SUPABASE_URL` | project URL |
 | `SUPABASE_KEY` | service_role key |
 | `GH_DISPATCH_TOKEN` | a token with `repo`+`workflow` scope — needed so each run can trigger its own successor (the auto `GITHUB_TOKEN` is blocked from doing this, to prevent recursive-run loops) |
@@ -321,7 +329,7 @@ Measured end to end, 2026-08-02:
 | Wallapop's own search indexing | **~150–200 s** — a new listing simply does not exist in search results before this |
 | Poll gap (mean wait) | ~155 s on the 5-min Actions chain; ~22 s with `--loop` at 45 s |
 | Loop execution | ~15 s |
-| Telegram send | <1 s |
+| Discord send | <1 s |
 
 Indexing dominates, and nothing in this repo can shorten it — which is exactly
 why `LOOP_INTERVAL_SECONDS` defaults to 45 s rather than something heroic.
@@ -358,7 +366,7 @@ in `run_log.notes`, so this is measured rather than assumed.
   comps workflow pushes a daily `.keepalive` commit to prevent that.
 - **Silence is the realistic failure, not a crash.** If the API changes shape,
   parsing yields nothing, every run "succeeds" with zero items and the feed
-  just stops. A dead-man switch pings Telegram after `DEAD_MAN_RUNS` (3)
+  just stops. A dead-man switch notifies you after `DEAD_MAN_RUNS` (3)
   consecutive empty runs.
 - **`observations` grows fast** — roughly one row per listing per run, ~100k
   rows/day at a 5-minute cadence, which would fill a free Supabase project in
@@ -391,7 +399,7 @@ in `run_log.notes`, so this is measured rather than assumed.
 | [models.py](models.py) | title → canonical `model_key` registry |
 | [junk.py](junk.py) | phrase/form-factor filters |
 | [pricing.py](pricing.py) | comps pool, decay-weighted quantile, shrinkage, margin gate |
-| [alerts.py](alerts.py) | Telegram formatting + delivery |
+| [alerts.py](alerts.py) | Alert formatting + Discord delivery |
 | [db.py](db.py) | Supabase persistence |
 | [alert_loop.py](alert_loop.py) · [comps_loop.py](comps_loop.py) | the two entrypoints |
 | [seed.py](seed.py) | searches + seed prices |

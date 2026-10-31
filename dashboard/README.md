@@ -203,7 +203,7 @@ changes.
 
 `pricing.evaluate()` is not the only gate the tracker applies, and porting only
 that function is how this dashboard spent a long time disagreeing with the
-Telegram feed about what a deal is. Before a listing reaches `evaluate()`,
+alert feed about what a deal is. Before a listing reaches `evaluate()`,
 `alert_loop`'s candidate loop rejects four classes of listing outright:
 
 | Rejection | Tracker | `listings` column |

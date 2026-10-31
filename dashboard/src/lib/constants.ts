@@ -9,7 +9,7 @@
  * here, and it has already bitten: before this rewrite the dashboard's in-person
  * ceiling ignored `MARGIN_RATE` (every ceiling above ~278 EUR was too high), its
  * deal gate compared the raw asking price rather than the haggled offer to the
- * buy ceiling (so the dashboard and the Telegram feed disagreed about what a
+ * buy ceiling (so the dashboard and the alert feed disagreed about what a
  * deal even was), and nothing applied `MIN_PLAUSIBLE_RATIO` at all — which on a
  * list sorted by margin descending means replicas and empty boxes sort first.
  *

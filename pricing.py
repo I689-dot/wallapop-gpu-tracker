@@ -460,7 +460,7 @@ def recompute_model_price(
         "shrunk": shrunk,
         "n_comps": len(comps),
         # How many of n_comps this model actually owns, before borrowing from
-        # split-VRAM siblings. n_comps was reported to Telegram and to the
+        # split-VRAM siblings. n_comps was reported in the alert and to the
         # dashboard's confidence badge as if it were this number, so a generic
         # key holding zero comps of its own advertised "n=8" — the borrowed pool
         # counted as evidence about a model it says nothing directly about. Both

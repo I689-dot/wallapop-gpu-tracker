@@ -1,9 +1,22 @@
-"""Telegram delivery (raw Bot API over httpx — no extra dependency needed)."""
+"""Discord delivery (bot token over the plain REST API — no extra dependency).
+
+The alert text is still *built* as a small, balanced subset of HTML
+(`build_caption`, `build_error_text`) and converted to Discord Markdown only at
+the moment of sending (`html_to_markdown`). That split is deliberate: the
+builders were written for Telegram and have ~40 tests pinning their output, and
+Discord renders its own Markdown rather than HTML, so the translation lives in
+one place at the edge instead of the text being rewritten twice.
+
+A bot posts with `Authorization: Bot <token>` to
+`/channels/{channel_id}/messages`. No gateway connection is needed to *send*, so
+there is no long-lived process and nothing to keep alive between loop runs.
+"""
 
 from __future__ import annotations
 
 import html
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -16,10 +29,12 @@ from wallapop_client import Item
 
 log = logging.getLogger("alerts")
 
-API = "https://api.telegram.org/bot{token}/{method}"
 MADRID = ZoneInfo("Europe/Madrid")
 
-# Telegram truncates photo captions at 1024 characters.
+# Inherited from Telegram, whose photo captions truncate at 1024 characters.
+# Discord's embed description allows 4096, but the cap is kept as a conservative
+# bound on how long one alert gets: a phone's notification preview is not a place
+# for a full listing description, and the tests pin the behaviour.
 CAPTION_LIMIT = 1024
 DESC_CHARS = 200
 
@@ -116,7 +131,11 @@ def build_caption(
     previous_price: float | None,
     model_display: str | None,
 ) -> str:
-    """The §9 alert body, as Telegram HTML.
+    """The §9 alert body, as a small balanced subset of HTML.
+
+    Converted to Discord Markdown by `html_to_markdown` on the way out; every tag opens
+    and closes within the line that carries it, which is what makes that
+    conversion (and the truncation below) safe.
 
     No emoji anywhere — plain-text labels instead, so it reads as a normal
     message rather than a wall of icons. Bold is reserved for the numbers
@@ -248,7 +267,7 @@ def build_caption(
         else:
             # Every line's HTML tags open and close within that same line, so
             # cutting at the last newline can never sever one — a mid-tag cut
-            # would make Telegram reject the whole message as unparsable HTML.
+            # would leave an unbalanced tag for html_to_markdown to mis-render.
             truncated = caption[: CAPTION_LIMIT - 1]
             safe_cut = truncated.rfind("\n")
             caption = (truncated[:safe_cut] if safe_cut > 0 else truncated) + "…"
@@ -298,17 +317,127 @@ def marked_within(runs: list[dict], marker: str, cutoff: datetime) -> bool:
     return False
 
 
-class Telegram:
-    def __init__(self, token: str | None = None, chat_id: str | None = None) -> None:
-        self.token = token or config.TELEGRAM_TOKEN
-        self.chat_id = chat_id or config.TELEGRAM_CHAT_ID
+# ------------------------------------------------- HTML -> Markdown (the edge)
+# Only the tags build_caption / build_error_text emit are handled. Everything
+# else in a message is seller-controlled free text that html.escape has already
+# neutralised, so a real tag can only be one we wrote.
+_TAG_RX = re.compile(r"(</?(?:b|i|s|pre)>)")
+_URL_LINE_RX = re.compile(r"^https?://\S+$")
+# What would turn seller text into formatting. `_` and `*` are the real risk
+# (a listing titled "RTX_3070 *URGE*"); the rest keep headings, quotes, spoilers
+# (`||`), links and `<@id>` mention syntax from appearing out of nowhere.
+_MD_SPECIALS_RX = re.compile(r"([\\`*_~|>#<\[\]])")
+_TAG_STRIP_RX = re.compile(r"</?(?:b|i|s|pre)>")
+
+
+def _md_escape(text: str) -> str:
+    return _MD_SPECIALS_RX.sub(r"\\\1", text)
+
+
+def _fence_for(code: str) -> str:
+    """A code fence longer than any backtick run inside the code."""
+    longest = max((len(m) for m in re.findall(r"`+", code)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def html_to_markdown(text: str) -> str:
+    """Convert the caption/error HTML subset into Discord Markdown.
+
+    * `<b>` -> bold, `<i>` -> italic, `<s>` -> strikethrough, so the caption's
+      "(antes ~~260€~~)" keeps its meaning.
+    * `<pre>` -> a fenced code block, contents untouched (tracebacks are full of
+      characters Markdown would otherwise eat).
+    * Outside `<pre>`, text is entity-unescaped and then Markdown-escaped.
+      Newlines stay plain: Discord, unlike CommonMark, treats a single newline
+      as a line break.
+    * A line that is only a URL is left unescaped: backslash escapes would
+      corrupt the link, and Discord autolinks a bare URL.
+    """
+    out: list[str] = []
+    in_pre = False
+    pre_buf: list[str] = []
+    for part in _TAG_RX.split(text):
+        if part == "<pre>":
+            in_pre, pre_buf = True, []
+        elif part == "</pre>":
+            in_pre = False
+            code = html.unescape("".join(pre_buf))
+            fence = _fence_for(code)
+            out.append(f"{fence}\n{code}\n{fence}")
+        elif in_pre:
+            pre_buf.append(part)
+        elif part in ("<b>", "</b>"):
+            out.append("**")
+        elif part in ("<i>", "</i>"):
+            out.append("*")
+        elif part in ("<s>", "</s>"):
+            out.append("~~")
+        else:
+            lines = []
+            for line in html.unescape(part).split("\n"):
+                lines.append(line if _URL_LINE_RX.match(line) else _md_escape(line))
+            out.append("\n".join(lines))
+    return "".join(out)
+
+
+def split_title(text: str) -> tuple[str, str]:
+    """Split the first line off as the embed title; the rest is the description.
+
+    "CHOLLO · RTX 3070" belongs in the title, which is what a notification
+    preview shows. The title is plain text: tags stripped, entities decoded.
+    """
+    head, _, rest = text.partition("\n")
+    title = html.unescape(_TAG_STRIP_RX.sub("", head)).strip()
+    return title, rest.lstrip("\n")
+
+
+API = "https://discord.com/api/v10"
+
+# Discord's hard limits on an embed. Exceeding either is a 400 that loses the
+# whole alert, so both are enforced rather than trusted to the caption cap.
+EMBED_TITLE_LIMIT = 256
+EMBED_DESCRIPTION_LIMIT = 4096
+
+# Embed accent colours: green for a deal, amber for a price drop, grey for a bare
+# keyword match, red for an error ping. Colour is the one thing visible from the
+# channel list at a glance, which is what the three situations differ by.
+COLOR_DEAL = 0x2ECC71
+COLOR_DROP = 0xF1C40F
+COLOR_MATCH = 0x95A5A6
+COLOR_ERROR = 0xE74C3C
+
+# On a 429, wait out Discord's `retry_after` if it is short enough to be worth
+# blocking a loop run for, and give up beyond that: a failed alert is not
+# recorded in sent_alerts, so it is retried on the next cycle anyway.
+MAX_RETRY_WAIT_SECONDS = 10.0
+SEND_ATTEMPTS = 3
+
+
+class Discord:
+    """Sends alerts and error pings to one Discord channel as a bot.
+
+    Setup is the usual bot dance — create an application, add a bot, invite it to
+    the server with *Send Messages* and *Embed Links* in the target channel — and
+    the failure for getting it wrong is a 403 with a Discord error code, which is
+    logged verbatim because it names the missing permission.
+    """
+
+    def __init__(self, token: str | None = None, channel_id: str | None = None) -> None:
+        self.token = (token if token is not None else config.DISCORD_TOKEN).strip()
+        self.channel_id = (
+            channel_id if channel_id is not None else config.DISCORD_CHANNEL_ID
+        ).strip()
         self._client = httpx.Client(timeout=config.HTTP_TIMEOUT)
         self._last_send = 0.0
+        # HTTP status of the most recent failed send (None for a transport
+        # error or a success). Lets send_alert tell "Discord rejected this
+        # body" from "Discord is unreachable" without _post's bool growing.
+        self.last_status: int | None = None
 
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "Telegram":
+    def __enter__(self) -> "Discord":
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -316,21 +445,67 @@ class Telegram:
 
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_send
-        if elapsed < config.TELEGRAM_RATE_DELAY:
-            time.sleep(config.TELEGRAM_RATE_DELAY - elapsed)
+        if elapsed < config.DISCORD_RATE_DELAY:
+            time.sleep(config.DISCORD_RATE_DELAY - elapsed)
         self._last_send = time.monotonic()
 
-    def _post(self, method: str, payload: dict) -> bool:
-        url = API.format(token=self.token, method=method)
-        try:
-            resp = self._client.post(url, json=payload)
-        except httpx.HTTPError as exc:
-            log.error("Telegram %s failed: %s", method, exc)
+    def _configured(self) -> bool:
+        if not self.token or not self.channel_id:
+            log.error("Discord is not configured: set DISCORD_TOKEN and DISCORD_CHANNEL_ID")
             return False
-        if resp.status_code == 200:
-            return True
-        log.error("Telegram %s -> %s: %s", method, resp.status_code, resp.text[:300])
+        if not self.channel_id.isdigit():
+            # The classic mistake: a channel *name*, or a pasted URL, where the
+            # numeric id (Developer Mode -> right-click -> Copy Channel ID) goes.
+            log.error("DISCORD_CHANNEL_ID must be the numeric channel id, got %r", self.channel_id)
+            return False
+        return True
+
+    @staticmethod
+    def _retry_after(resp: httpx.Response) -> float | None:
+        try:
+            return float(resp.json().get("retry_after"))
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def _post(self, embed: dict) -> bool:
+        self.last_status = None
+        if not self._configured():
+            return False
+        payload = {
+            "embeds": [embed],
+            # Seller text is untrusted: a listing titled "@everyone" or carrying
+            # "<@123>" must be text, never a ping. Embeds do not notify, but
+            # this closes the door regardless of where the text ends up.
+            "allowed_mentions": {"parse": []},
+        }
+        url = f"{API}/channels/{self.channel_id}/messages"
+        headers = {"Authorization": f"Bot {self.token}"}
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                resp = self._client.post(url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                log.error("Discord send failed: %s", exc)
+                return False
+            if resp.status_code in (200, 201):
+                return True
+            self.last_status = resp.status_code
+            if resp.status_code == 429 and attempt < SEND_ATTEMPTS:
+                wait = self._retry_after(resp)
+                if wait is not None and wait <= MAX_RETRY_WAIT_SECONDS:
+                    log.warning("Discord rate limited, retrying in %.1fs", wait)
+                    time.sleep(wait)
+                    continue
+            log.error("Discord -> %s: %s", resp.status_code, resp.text[:300])
+            return False
         return False
+
+    @staticmethod
+    def _embed(title: str, body: str, color: int) -> dict:
+        return {
+            "title": title[:EMBED_TITLE_LIMIT],
+            "description": body[:EMBED_DESCRIPTION_LIMIT],
+            "color": color,
+        }
 
     def send_alert(
         self,
@@ -347,42 +522,52 @@ class Telegram:
             return True
 
         self._throttle()
+        title, body = split_title(caption)
+
+        # The caption ends with the listing URL. The embed title links to it, so
+        # repeating it as a bare line underneath is clutter.
+        if item.web_url:
+            tail = html.escape(item.web_url)
+            body = body.rstrip()
+            if body.endswith(tail):
+                body = body[: -len(tail)].rstrip()
+
+        if kind == "price_drop":
+            color = COLOR_DROP
+        elif deal.priced:
+            color = COLOR_DEAL
+        else:
+            color = COLOR_MATCH
+
+        embed = self._embed(title, html_to_markdown(body), color)
+        if item.web_url:
+            embed["url"] = item.web_url
         if item.image_url:
-            sent = self._post(
-                "sendPhoto",
-                {
-                    "chat_id": self.chat_id,
-                    "photo": item.image_url,
-                    "caption": caption,
-                    "parse_mode": "HTML",
-                },
-            )
-            if sent:
-                return True
-            # A rejected image URL must not cost us the alert.
-            log.warning("sendPhoto failed for %s — falling back to text", item.item_id)
+            embed["image"] = {"url": item.image_url}
 
-        return self._post(
-            "sendMessage",
-            {
-                "chat_id": self.chat_id,
-                "text": caption,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-            },
-        )
+        sent = self._post(embed)
+        if not sent and self.last_status == 400 and "image" in embed:
+            # A malformed image URL is not "a picture that fails to load" —
+            # Discord drops those silently — it is a 400 on the whole body
+            # ("Not a well formed URL"), and that loses the alert. Found by
+            # sending one, not by reading the docs. Retry once without the
+            # picture; only on a 400, so an outage does not double its requests.
+            log.warning("Discord rejected the embed; retrying %s without the image", item.item_id)
+            del embed["image"]
+            sent = self._post(embed)
+        return sent
 
-    def send_error(self, text: str) -> None:
-        """Surface failures instead of dying silently in a cron runner."""
+    def send_error(self, text: str) -> bool:
+        """Surface failures instead of dying silently in a cron runner.
+
+        Returns whether the ping was actually delivered. It used to return
+        nothing, which let a failed send look identical to a successful one —
+        and the callers that start a cooldown on "we told the owner" were
+        starting it on a message nobody received.
+        """
         if config.DRY_RUN:
             log.info("[DRY RUN] error ping: %s", text)
-            return
+            return True
         self._throttle()
-        self._post(
-            "sendMessage",
-            {
-                "chat_id": self.chat_id,
-                "text": build_error_text(text),
-                "parse_mode": "HTML",
-            },
-        )
+        title, body = split_title(build_error_text(text))
+        return self._post(self._embed(title, html_to_markdown(body), COLOR_ERROR))

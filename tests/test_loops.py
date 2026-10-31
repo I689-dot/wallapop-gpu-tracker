@@ -1,4 +1,4 @@
-"""End-to-end wiring for both loops, with the DB, API and Telegram stubbed.
+"""End-to-end wiring for both loops, with the DB, API and Discord stubbed.
 
 These catch the integration bugs unit tests miss — a dedup rule that never
 fires, a reserved listing that gets alerted, a sale inferred one run too early.
@@ -227,10 +227,14 @@ class FakeClient:
         return any(i.item_id == item_id for i in self._items)
 
 
-class FakeTelegram:
+class FakeNotifier:
     def __init__(self, *a, **k):
         self.sent = []
         self.errors = []
+        # What send_error reports. Real Discord.send_error returns False on a
+        # failed send instead of raising, and the cooldown logic has to honour
+        # that; the default is "delivered" so existing tests are unaffected.
+        self.deliver = True
 
     def send_alert(self, item, deal, kind, previous_price=None, model_display=None):
         self.sent.append((item.item_id, kind, item.price, deal))
@@ -238,6 +242,7 @@ class FakeTelegram:
 
     def send_error(self, text):
         self.errors.append(text)
+        return self.deliver
 
     def close(self):
         pass
@@ -270,9 +275,9 @@ def wire(monkeypatch):
     """Patch the loops' collaborators and hand back the fakes."""
 
     def _wire(module, db, items, details=None):
-        tg = FakeTelegram()
+        tg = FakeNotifier()
         monkeypatch.setattr(module, "Database", lambda *a, **k: db)
-        monkeypatch.setattr(module, "Telegram", lambda *a, **k: tg)
+        monkeypatch.setattr(module, "Discord", lambda *a, **k: tg)
         monkeypatch.setattr(
             module, "WallapopClient", lambda *a, **k: FakeClient(items, details)
         )
@@ -295,12 +300,12 @@ def test_cheap_card_alerts_and_is_recorded(wire):
 
 
 def test_dry_run_never_writes_to_the_dedup_table(wire, monkeypatch):
-    """Regression: DRY_RUN skips the real Telegram send but FakeTelegram (and
-    the real Telegram class) still returns True for logging purposes. If that
+    """Regression: DRY_RUN skips the real Discord send but FakeNotifier (and
+    the real Discord class) still returns True for logging purposes. If that
     True were treated as a real send, db.record_alert() would mark the item as
     already-alerted — silently suppressing the real alert once this actually
     runs for real. A production incident: local DRY_RUN testing polluted
-    sent_alerts with 16 fake rows, none of which ever reached Telegram.
+    sent_alerts with 16 fake rows, none of which ever reached Discord.
     """
     monkeypatch.setattr(config, "DRY_RUN", True)
     db = FakeDB([ALERT_SEARCH], PRICES)
@@ -1248,7 +1253,7 @@ def test_loop_mode_survives_a_failed_pass_and_backs_off(monkeypatch):
 
     assert calls["n"] == 4, "a failed pass must not end the process"
     # Two failures back off (45s then 90s), then a good pass resets to the
-    # normal cadence — no tight crash-loop hammering Wallapop and Telegram.
+    # normal cadence — no tight crash-loop hammering Wallapop and Discord.
     assert slept[0] == config.LOOP_INTERVAL_SECONDS
     assert slept[1] == config.LOOP_INTERVAL_SECONDS * 2
     assert slept[2] == config.LOOP_INTERVAL_SECONDS
@@ -1379,21 +1384,23 @@ def test_a_confident_match_with_no_comps_still_uses_the_bootstrap_cap(wire):
 
 
 # ------------------------------------------------ comps crash-ping cooldown
-# A crash used to message Telegram on every run. When
+# A crash used to message the owner on every run. When
 # get_open_listings_for_models started timing out on roughly every other pass
 # in early October 2026, that was an identical traceback every hour — the same
 # failure mode the dead-man switch already had a cooldown for, on a path that
 # did not. These pin the cooldown rather than the query fix, because the
 # reporting shape was wrong independently of that bug.
 class _CrashTg:
-    def __init__(self, broken=False):
+    def __init__(self, broken=False, deliver=True):
         self.sent = []
         self.broken = broken
+        self.deliver = deliver
 
     def send_error(self, text):
         if self.broken:
-            raise RuntimeError("telegram down")
+            raise RuntimeError("discord down")
         self.sent.append(text)
+        return self.deliver
 
 
 class _CrashDB:
@@ -1458,3 +1465,38 @@ def test_unreadable_run_history_still_reports_the_crash():
     tg = _CrashTg()
     comps_loop._report_crash(_CrashDB(broken=True), tg, "boom")
     assert len(tg.sent) == 1
+
+
+def test_a_ping_the_notifier_reports_as_undelivered_does_not_open_a_cooldown():
+    """Discord.send_error returns False on a failed send instead of raising, so
+    the except branch above never sees it. Before it returned anything at all,
+    that fell through to the marker and bought six hours of silence for a
+    message nobody received — and the likeliest cause of an undelivered ping is
+    the notification channel being broken, which is exactly the outage the
+    ping exists to report."""
+    notes = comps_loop._report_crash(_CrashDB(), _CrashTg(deliver=False), "boom")
+    assert notes == ""
+
+
+def test_a_notifier_that_returns_nothing_is_taken_as_delivered():
+    """Older fakes and any third-party notifier return None; only an explicit
+    False means failure."""
+
+    class Silent:
+        def send_error(self, text):
+            return None
+
+    assert comps_loop._report_crash(_CrashDB(), Silent(), "boom") == comps_loop.CRASH_MARKER
+
+
+def test_dead_man_does_not_mark_the_run_when_the_warning_was_not_delivered(wire):
+    """Same rule on the other path: the marker means "the owner was told"."""
+    db = FakeDB([ALERT_SEARCH], PRICES, runs=[_empty_run()] * config.DEAD_MAN_RUNS)
+    tg = wire(alert_loop, db, [])
+    tg.deliver = False
+
+    alert_loop.run_once()
+
+    assert tg.errors, "it must still have tried to send"
+    written = [f.get("notes", "") for _, f in db.finished]
+    assert not any(alert_loop.DEAD_MAN_MARKER in n for n in written)

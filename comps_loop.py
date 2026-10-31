@@ -18,7 +18,7 @@ import models
 import pricing
 from alert_loop import _check_dead_man, upsert_listing_batches
 import alerts as alerts_mod
-from alerts import Telegram
+from alerts import Discord
 from db import Database, iso, now
 from wallapop_client import Item, WallapopClient
 
@@ -219,7 +219,7 @@ def infer_sales(
 
 # Marker and cooldown for crash pings, mirroring alert_loop's dead-man switch.
 #
-# A crash here used to message Telegram on every single run. That is fine for a
+# A crash here used to message the owner on every single run. That is fine for a
 # one-off and useless for anything persistent: when `get_open_listings_for_models`
 # started timing out on roughly every other run in early October 2026, the
 # channel got an identical traceback every hour, and a channel full of the same
@@ -236,8 +236,8 @@ CRASH_COOLDOWN_HOURS = 6.0
 CRASH_HISTORY_RUNS = 60
 
 
-def _report_crash(db: Database, telegram: Telegram, trace: str) -> str:
-    """Ping Telegram about a crash unless an identical one is inside cooldown.
+def _report_crash(db: Database, notifier: Discord, trace: str) -> str:
+    """Ping the owner about a crash unless an identical one is inside cooldown.
 
     Returns the note fragment to record on this run's row, which is what a
     later run reads to decide whether it is still inside the cooldown.
@@ -258,13 +258,18 @@ def _report_crash(db: Database, telegram: Telegram, trace: str) -> str:
         return CRASH_MARKER
 
     try:
-        telegram.send_error(
+        delivered = notifier.send_error(
             f"comps_loop crashed\n{trace[-1200:]}\n"
             f"Further crash pings suppressed for {CRASH_COOLDOWN_HOURS:.0f}h."
         )
     except Exception:
         log.exception("could not deliver error ping")
         # No marker: an undelivered ping must not start a cooldown.
+        return ""
+    if delivered is False:
+        # send_error reports failure by returning False rather than raising, so
+        # the except above never saw it — and this used to fall through to the
+        # marker, opening a six-hour cooldown on a message nobody received.
         return ""
     return CRASH_MARKER
 
@@ -276,7 +281,7 @@ def run_once() -> dict:
     db = Database()
     run_id = db.start_run("comps")
     stats = {"items_seen": 0, "closed": 0, "models_updated": 0, "errors": 0, "observations": 0}
-    telegram = Telegram()
+    notifier = Discord()
     # Bound before the try: the finally block reads it, so a failure anywhere
     # above would otherwise raise NameError there and bury the real traceback.
     crash_notes = ""
@@ -417,7 +422,7 @@ def run_once() -> dict:
         stats["errors"] += 1
         trace = traceback.format_exc()
         log.error("comps loop crashed:\n%s", trace)
-        crash_notes = _report_crash(db, telegram, trace)
+        crash_notes = _report_crash(db, notifier, trace)
         raise
     finally:
         notes = f"closed={stats['closed']} repriced={stats['models_updated']}"
@@ -432,10 +437,10 @@ def run_once() -> dict:
         # Runs after finish_run so this run counts toward the streak. The comps
         # loop silently returning nothing for a day is the reason this exists.
         try:
-            _check_dead_man(db, telegram, "comps", run_id=run_id, notes=notes)
+            _check_dead_man(db, notifier, "comps", run_id=run_id, notes=notes)
         except Exception:
             log.warning("dead-man check failed", exc_info=True)
-        telegram.close()
+        notifier.close()
 
 
 if __name__ == "__main__":

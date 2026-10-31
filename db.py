@@ -516,7 +516,7 @@ class Database:
         each other. Whenever the other loop inserted between this loop's
         read-back and its own insert, the insert hit the unique index and raised
         a duplicate-key error — inside the main try of both loops, so the result
-        was a crashed run, a Telegram error ping and a re-raise, over a table
+        was a crashed run, an error ping and a re-raise, over a table
         whose only purpose is filter tuning.
 
         ignore_duplicates makes that collision the no-op it always should have
@@ -671,7 +671,7 @@ class Database:
         """Last N finished runs, newest first — input to the dead-man switch.
 
         `notes` is in the select list because the dead-man switch has no state
-        of its own: once tripped it fired a Telegram message every single run,
+        of its own: once tripped it sent a notification every single run,
         so a weekend outage was ~1000 identical messages. The cooldown is
         implemented by writing a marker into run_log.notes and looking for it in
         the recent history, which only works if the history actually carries the
